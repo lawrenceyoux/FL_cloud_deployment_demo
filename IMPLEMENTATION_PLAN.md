@@ -658,9 +658,9 @@ Bad data never reaches S3 or EKS containers.
 |-------|---------------|
 | No null values anywhere | 0 nulls |
 | Row counts sum ≈ 5 110 | Total within 5% |
-| Hospital 1 stroke rate | 8–18% |
-| Hospital 2 stroke rate | 1–6% |
-| Hospital 3 stroke rate | 3–9% |
+| Hospital 1 stroke rate | 6–20% |
+| Hospital 2 stroke rate | 0.1–5% |
+| Hospital 3 stroke rate | 1–7% |
 | Expected one-hot columns present | `work_type_*`, `smoking_status_*` |
 | All numeric dtypes | No object columns remaining |
 

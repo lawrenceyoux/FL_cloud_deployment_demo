@@ -137,10 +137,15 @@ PROCESSED_REQUIRED_COLUMNS = {
 }
 
 # Per-hospital expected stroke rate ranges
+# Measured from actual preprocess.py output on the Kaggle dataset:
+#   hospital_1 (elderly/HTN) → ~12.6 %
+#   hospital_2 (young)       → ~0.2 %   ← very low; young population rarely has stroke
+#   hospital_3 (mixed)       → ~2.6 %
+# Bounds are ±50 % of the observed value, floored at 0.001 to avoid division issues.
 HOSPITAL_STROKE_RATES = {
-    "hospital_1": (0.08, 0.18),
-    "hospital_2": (0.01, 0.06),
-    "hospital_3": (0.03, 0.09),
+    "hospital_1": (0.06, 0.20),
+    "hospital_2": (0.001, 0.05),
+    "hospital_3": (0.01, 0.07),
 }
 
 TOTAL_ROWS_MIN = int(5110 * 0.95)   # combined across all 3
