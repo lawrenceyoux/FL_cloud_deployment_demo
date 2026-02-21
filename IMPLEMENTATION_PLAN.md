@@ -174,28 +174,11 @@
    | `AWS_SECRET_ACCESS_KEY` | IAM user/role secret key |
    | `AWS_REGION` | Target region (e.g. `us-east-1`) |
 
-2. **Bootstrap Terraform Remote State (one-time, manual)**
+2. **Bootstrap Terraform Remote State (automated by CI)**
 
-   The S3 bucket and DynamoDB table for Terraform state must exist before the pipeline runs.
-   Run this once from any machine that has AWS access (or via the AWS Console):
+   The S3 bucket and DynamoDB table for Terraform state are created automatically by the **bootstrap job** in the GitHub Actions workflow before `terraform init` runs. No manual step is needed.
 
-   ```bash
-   # State bucket
-   aws s3 mb s3://fl-demo-terraform-state --region us-east-1
-   aws s3api put-bucket-versioning \
-     --bucket fl-demo-terraform-state \
-     --versioning-configuration Status=Enabled
-
-   # State locking table
-   aws dynamodb create-table \
-     --table-name fl-demo-terraform-locks \
-     --attribute-definitions AttributeName=LockID,AttributeType=S \
-     --key-schema AttributeName=LockID,KeyType=HASH \
-     --billing-mode PAY_PER_REQUEST \
-     --region us-east-1
-   ```
-
-   All other S3 buckets (hospital data, models, MLflow) are created by Terraform — no manual `aws s3 mb` needed.
+   The bootstrap job uses `aws s3api head-bucket` / `aws dynamodb describe-table` checks so it is safe to re-run — it skips creation if the resources already exist.
 
 3. **GitHub Actions CI/CD Pipeline** (`.github/workflows/terraform.yml`)
 
