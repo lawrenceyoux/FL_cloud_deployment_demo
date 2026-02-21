@@ -1,6 +1,16 @@
 # Federated Learning Demo: Healthcare Risk Prediction
 ## High-Level Design Document
 
+> **Note**: This document describes the original planned architecture and has not been fully implemented.
+> The current running code lives in `local_dev/` and covers:
+> - Stroke prediction (binary classification) on the Kaggle stroke dataset
+> - Simple `StrokeNet` MLP, FedAvg aggregation, 3 non-IID hospitals
+> - Flower server/client mode OR single-process simulation via `simulate.py`
+> - MLflow for experiment tracking
+>
+> Features described here (multimodal data, AWS ECS, differential privacy, Streamlit dashboard)
+> are **not yet implemented**. See [README.md](README.md) for what currently works.
+
 ---
 
 ## 1. Project Overview

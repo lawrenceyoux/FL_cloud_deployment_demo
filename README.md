@@ -1,365 +1,255 @@
-# Federated Learning Demo: Healthcare Risk Prediction
+# Federated Learning Demo: Stroke Prediction
 
-> **Privacy-preserving machine learning for multi-hospital collaborative intelligence**
+> **Privacy-preserving machine learning — 3 hospitals, one shared model, no shared data**
 
-[![AWS](https://img.shields.io/badge/AWS-ECS%20%7C%20S3%20%7C%20Fargate-orange)](https://aws.amazon.com/)
-[![Flower](https://img.shields.io/badge/Flower-1.7%2B-blue)](https://flower.dev/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.2%2B-red)](https://pytorch.org/)
+[![Flower](https://img.shields.io/badge/Flower-1.5%2B-blue)](https://flower.dev/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-red)](https://pytorch.org/)
+[![MLflow](https://img.shields.io/badge/MLflow-tracking-blue)](https://mlflow.org/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-## 🎯 Project Overview
+## Project Overview
 
-This project demonstrates **production-ready federated learning** for healthcare, addressing:
+This project demonstrates **federated learning (FL)** applied to stroke prediction, using a real-world tabular healthcare dataset split across three simulated hospitals. No raw patient data ever leaves a hospital — only model weight updates are exchanged and aggregated on the central server.
 
-✅ **Privacy-Guaranteed Learning**: Train ML models across hospitals without sharing patient data  
-✅ **Multimodal Data Fusion**: Clinical timeseries + lab results + biology markers + omics  
-✅ **Longitudinal Modeling**: Capture temporal patterns in patient health trajectories  
-✅ **Cloud-Native Deployment**: Fully automated AWS infrastructure with Terraform  
-✅ **MLOps Pipeline**: End-to-end ML workflow with tracking, monitoring, and visualization  
+**What it shows:**
 
-### Use Case: Multi-Hospital Risk Prediction
+- Federated training with [Flower](https://flower.dev/) using the FedAvg strategy
+- Non-IID data partitioning to simulate realistic hospital demographic differences
+- Per-hospital and averaged metric tracking (accuracy, F1, recall, AUC-ROC) with MLflow
+- Two runnable modes: a single-process simulation and a multi-terminal Flower server/client setup
+- Cloud deployment scaffolding via Terraform (EKS) and Kubernetes manifests
 
-**Problem**: 3-5 hospitals want to collaboratively predict patient readmission risk, but cannot share sensitive patient data due to privacy regulations.
+### Use Case
 
-**Solution**: Federated learning trains a shared model by:
-1. Each hospital trains locally on their own data
-2. Only encrypted model updates (not data) are shared
-3. Central server aggregates updates into a global model
-4. Differential privacy ensures individual patient privacy
+**Problem**: Three hospitals want to collaboratively train a stroke-risk classifier but cannot share patient records due to privacy regulations.
+
+**Solution**:
+1. Each hospital trains a local copy of the model on its own data
+2. Only model weights (not data) are sent to the central FL server
+3. The server aggregates the weights using FedAvg and broadcasts the updated global model
+4. This repeats for several rounds until the model converges
 
 ---
 
-## 🏗️ Architecture at a Glance
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│              AWS Cloud (Fully Automated)                │
-│                                                          │
-│  Central FL Server (ECS)                                 │
-│         ↓           ↓           ↓                        │
-│   Hospital 1    Hospital 2   Hospital 3                 │
-│   (ECS Task)    (ECS Task)   (ECS Task)                 │
-│      ↓              ↓             ↓                      │
-│   Local Data    Local Data   Local Data                 │
-│   (S3)          (S3)         (S3)                        │
-│                                                          │
-│  MLflow Tracking | CloudWatch | Streamlit Dashboard     │
-└─────────────────────────────────────────────────────────┘
++------------------------------------------------------+
+|                  FL Server (FedAvg)                  |
+|         |              |              |              |
+|    Hospital 1      Hospital 2     Hospital 3         |
+|  (elderly/HTN)   (young/healthy)  (mixed/rural)      |
+|   local data       local data      local data        |
++------------------------------------------------------+
+                  MLflow Tracking
 ```
 
-**Key Components**:
-- **Federated Learning**: Flower framework for distributed training
-- **Privacy**: Differential privacy (ε=1.0) + secure aggregation
-- **ML Models**: Multimodal Transformer for classification + federated clustering
-- **Data**: Synthetic longitudinal patient records (500-1000 per hospital)
-- **Infrastructure**: Terraform-managed ECS Fargate cluster
-- **Monitoring**: MLflow experiments + real-time Streamlit dashboard
+**Key components**:
+
+| Component | Description |
+|-----------|-------------|
+| `StrokeNet` | Simple MLP (64 -> 32 -> 1) with Dropout and Sigmoid output |
+| FedAvg | Weighted averaging of client parameters by number of training samples |
+| Flower | Handles server/client communication in multi-terminal mode |
+| MLflow | Logs per-hospital and averaged metrics every round |
+| Terraform + Kubernetes | IaC scaffolding for EKS cloud deployment |
 
 ---
 
-## 📊 Demo Dataset (Synthetic)
+## Dataset
 
-Each simulated hospital has **500-1000 patients** with 6-12 months of data:
+**Source**: [Kaggle - Stroke Prediction Dataset](https://www.kaggle.com/datasets/fedesoriano/stroke-prediction-dataset)
+**Format**: Tabular CSV, ~5,000 rows, binary label (`stroke` = 0 or 1)
 
-| Modality | Features | Example |
-|----------|----------|---------|
-| **Clinical Timeseries** | Heart rate, BP, SpO2, temperature | Daily vitals |
-| **Lab Results** | CBC, metabolic panel | Weekly bloodwork |
-| **Biology Markers** | CRP, D-dimer, troponin | Inflammatory markers |
-| **Multi-Omics** | Gene expression (50-100 genes) | Simplified transcriptomics |
-| **Demographics** | Age, gender, comorbidities, meds | Static features |
+**Features used** (after preprocessing):
+- Demographics: `age`, `gender`, `ever_married`, `Residence_type`
+- Health: `hypertension`, `heart_disease`, `avg_glucose_level`, `bmi`
+- Lifestyle: `work_type` (one-hot), `smoking_status` (one-hot)
 
-**Target**: Predict readmission risk (High/Medium/Low) within 30 days
+**Non-IID hospital split**:
 
-**Non-IID Distribution**: Each hospital has different patient demographics (realistic scenario)
+| Hospital | Patients | Profile | Approx. Stroke Rate |
+|----------|----------|---------|---------------------|
+| 1 | ~1 700 | Elderly / hypertension | ~12% |
+| 2 | ~1 400 | Young / healthy | ~2% |
+| 3 | ~2 000 | Mixed / rural | ~5% |
 
 ---
 
-## 🚀 Quick Start
+## Quick Start (local � no Docker, no cloud)
 
 ### Prerequisites
-- AWS Account with appropriate permissions
-- Terraform 1.7+
-- Docker 24+
-- Python 3.10+
 
-### One-Command Deployment
+- Python 3.10+
+- The Kaggle dataset CSV (see Step 1 below)
+
+### Setup
 
 ```bash
-# 1. Clone repository
-git clone <repo-url>
-cd FL
+cd local_dev
+python -m venv fl_env
+fl_env\Scripts\activate        # Windows
+# source fl_env/bin/activate   # Linux / macOS
+pip install -r requirements.txt
+```
 
-# 2. Configure AWS credentials
-export AWS_PROFILE=your-profile
-export AWS_REGION=us-east-1
+`requirements.txt` installs: `torch`, `flwr[simulation]`, `pandas`, `scikit-learn`, `mlflow`.
 
-# 3. Deploy infrastructure (5-10 minutes)
+### Step 1 - Get the data
+
+Download the CSV from Kaggle and place it at:
+
+```
+local_dev/data/raw/healthcare-dataset-stroke-data.csv
+```
+
+### Step 2 - Preprocess and split into 3 hospitals
+
+```bash
+cd local_dev
+python preprocess.py
+```
+
+Outputs `data/processed/hospital_1.csv`, `hospital_2.csv`, `hospital_3.csv`.
+
+### Step 3 - Run federated learning
+
+**Option A: Single-process simulation (easiest)**
+
+```bash
+python simulate.py
+```
+
+Runs a pure-Python FedAvg loop across all 3 hospitals in one process.  No Flower server/client networking needed.
+
+**Option B: Multi-terminal (closer to real deployment)**
+
+```bash
+# Terminal 1 - server
+python server.py
+
+# Terminal 2
+python client.py --hospital 1
+
+# Terminal 3
+python client.py --hospital 2
+
+# Terminal 4
+python client.py --hospital 3
+```
+
+### Step 4 - View results in MLflow
+
+```bash
+mlflow ui
+# Open http://localhost:5000
+```
+
+Tracked per round: `avg_accuracy`, `avg_f1`, `avg_recall`, `avg_auc`, and per-hospital variants (`hospital_1_acc`, etc.).
+
+---
+
+## Training Configuration
+
+| Parameter | Default |
+|-----------|---------|
+| Rounds | 10 |
+| Local epochs per round | 3 |
+| Batch size | 32 |
+| Learning rate | 0.001 |
+| Optimizer | Adam |
+| Loss | Weighted BCE (pos_weight = 20) |
+| Aggregation | FedAvg (weighted by samples) |
+
+The high `pos_weight` compensates for the strong class imbalance in the stroke dataset (~5% positive overall).
+
+---
+
+## Project Structure
+
+```
+FL_cloud_deployment_demo/
++-- local_dev/                     # All runnable local code
+|   +-- preprocess.py              # Clean & split Kaggle CSV into 3 hospital files
+|   +-- model.py                   # StrokeNet MLP definition + weight helpers
+|   +-- simulate.py                # Single-process FedAvg simulation
+|   +-- server.py                  # Flower FL server (multi-terminal mode)
+|   +-- client.py                  # Flower FL client (multi-terminal mode)
+|   +-- requirements.txt
+|   +-- data/
+|   |   +-- raw/                   # Place Kaggle CSV here
+|   |   +-- processed/             # hospital_1/2/3.csv (generated)
+|   +-- mlruns/                    # MLflow experiment logs
+|
++-- kubernetes/                    # K8s manifests (cloud deployment)
+|   +-- namespaces/
+|   +-- configmaps/
+|   +-- deployments/
+|   +-- services/
+|
++-- terraform/                     # EKS infrastructure as code
+|   +-- main.tf
+|   +-- eks.tf
+|   +-- vpc.tf
+|   +-- s3.tf
+|   +-- variables.tf
+|
++-- src/                           # Python package stubs (for future extension)
+|   +-- federated/
+|   +-- models/
+|   +-- preprocessing/
+|   +-- utils/
+|
++-- tests/
+    +-- unit/
+    +-- integration/
+```
+
+---
+
+## Cloud Deployment (EKS)
+
+Terraform and Kubernetes manifests are provided under `terraform/` and `kubernetes/` to deploy the FL setup on AWS EKS.
+
+```bash
 cd terraform
 terraform init
 terraform apply -auto-approve
-
-# 4. Generate synthetic data and upload
-cd ../data
-python generate_synthetic_data.py --hospitals 3 --patients 1000
-python upload_to_s3.py
-
-# 5. Start federated training
-cd ../scripts
-./start_training.sh
-
-# 6. Launch monitoring dashboard
-streamlit run ../dashboard/streamlit_app.py
 ```
 
-### Monitor Training
-
-- **MLflow UI**: `http://<alb-dns>:5000`
-- **Dashboard**: `http://localhost:8501`
-- **CloudWatch Logs**: AWS Console → CloudWatch → Log Groups
+Kubernetes manifests in `kubernetes/` define the FL server and client deployments, services, namespace, and ConfigMaps.
 
 ---
 
-## 🧪 Experiments & Results
-
-### Baseline Comparison
-
-| Model | Accuracy | AUC-ROC | F1-Score | Privacy | Training Time |
-|-------|----------|---------|----------|---------|---------------|
-| **Centralized** (baseline) | 0.89 | 0.92 | 0.88 | ❌ None | 20 min |
-| **Local-only** (per hospital) | 0.71 | 0.74 | 0.69 | ✅ Full | 5 min |
-| **Federated (ours)** | 0.85 | 0.88 | 0.84 | ✅ DP (ε=1.0) | 45 min |
-
-**Key Finding**: Federated learning achieves **95% of centralized performance** while preserving privacy.
-
-### Privacy-Utility Tradeoff
-
-| Privacy Budget (ε) | Accuracy | Notes |
-|-------------------|----------|-------|
-| ∞ (no privacy) | 0.87 | Baseline FL |
-| 5.0 | 0.86 | Acceptable privacy |
-| 1.0 | 0.85 | **Recommended** |
-| 0.5 | 0.81 | Strong privacy, lower utility |
-
----
-
-## 🔬 Research Contributions
-
-This demo enables research in:
-
-1. **Multimodal Fusion in FL**: How to effectively combine heterogeneous data types in distributed settings
-2. **Longitudinal Modeling**: Handling temporal dependencies with privacy constraints
-3. **Non-IID Data**: Techniques for heterogeneous data distributions across clients
-4. **Privacy-Utility Analysis**: Empirical evaluation of differential privacy impact
-5. **Healthcare Applications**: Real-world deployment considerations
-
-**Potential Publications**:
-- Conference paper on privacy-preserving multimodal FL
-- Benchmark dataset for FL research
-- Open-source framework contributions
-
----
-
-## 📁 Project Structure
-
-```
-FL/
-├── HIGH_LEVEL_DESIGN.md          # Detailed architecture (READ THIS FIRST)
-├── README.md                      # This file
-│
-├── data/                          # Data generation & preprocessing
-│   ├── generate_synthetic_data.py
-│   └── data_splitter.py
-│
-├── src/                           # Core ML code
-│   ├── models/                    # Neural network architectures
-│   ├── federated/                 # FL server & client
-│   ├── preprocessing/             # Feature engineering
-│   └── utils/                     # Helpers
-│
-├── terraform/                     # AWS infrastructure as code
-│   ├── main.tf
-│   ├── ecs.tf
-│   └── s3.tf
-│
-├── docker/                        # Container definitions
-│   ├── Dockerfile.server
-│   └── Dockerfile.client
-│
-├── dashboard/                     # Monitoring & visualization
-│   └── streamlit_app.py
-│
-└── scripts/                       # Automation scripts
-    ├── deploy.sh
-    └── start_training.sh
-```
-
----
-
-## 💰 Cost Estimate
-
-**Monthly AWS Cost**: ~$110-140
-
-Breakdown:
-- ECS Fargate (4 tasks): $50-80
-- S3 Storage: $5
-- DynamoDB: $5
-- CloudWatch: $10
-- NAT Gateway: $30
-- Data Transfer: $10
-
-**Cost Optimization**:
-- Use Spot instances for clients (save 70%)
-- Auto-scaling during off-hours
-- S3 Intelligent Tiering
-
----
-
-## 🔐 Privacy & Security
-
-- ✅ **Differential Privacy**: Opacus library for PyTorch
-- ✅ **Secure Aggregation**: Encrypted model updates
-- ✅ **Data Isolation**: No raw data leaves hospital boundaries
-- ✅ **TLS 1.3**: All communications encrypted
-- ✅ **IAM Least Privilege**: Minimal permissions per component
-- ✅ **Audit Logging**: Complete CloudWatch trail
-- ✅ **HIPAA-Aligned**: Follows healthcare compliance patterns
-
----
-
-## 📈 Monitoring & Observability
-
-### MLflow Tracking
-- Hyperparameters: Learning rate, batch size, privacy budget
-- Metrics: Accuracy, loss, AUC per round
-- Artifacts: Model checkpoints, confusion matrices
-
-### CloudWatch Metrics
-- System: CPU, memory, network I/O
-- Custom: Training progress, client participation
-- Alarms: Failures, performance degradation
-
-### Streamlit Dashboard
-- Real-time training progress
-- Per-hospital performance
-- Privacy budget consumption
-- Model convergence plots
-
----
-
-## 🛠️ Technology Stack
+## Technology Stack
 
 | Layer | Technology |
 |-------|-----------|
-| **FL Framework** | Flower 1.7+ |
-| **Deep Learning** | PyTorch 2.2+ |
-| **Privacy** | Opacus 1.4+ |
-| **Data** | Pandas, Polars, Parquet |
-| **MLOps** | MLflow 2.10+ |
-| **Orchestration** | AWS ECS Fargate |
-| **IaC** | Terraform 1.7+ |
-| **Containers** | Docker 24+ |
-| **Monitoring** | CloudWatch, Streamlit |
-| **Storage** | S3, DynamoDB |
+| FL Framework | Flower 1.5+ |
+| Deep Learning | PyTorch 2.0+ |
+| Data | Pandas, scikit-learn |
+| MLOps | MLflow |
+| IaC | Terraform (EKS) |
+| Orchestration | Kubernetes |
 
 ---
 
-## 🎯 Success Metrics
+## Roadmap
 
-✅ **Functional Goals**:
-- [x] FL training completes successfully
-- [x] 3+ hospitals participate
-- [x] Models converge in < 100 rounds
-- [x] One-command deployment works
-
-✅ **Performance Goals**:
-- [x] Achieve ≥85% of centralized baseline
-- [x] Privacy budget ε < 5
-- [x] Training time < 2 hours
-
-✅ **Scalability Goals**:
-- [x] Support 5+ hospitals
-- [x] Handle client dropouts gracefully
+- [ ] Add FedProx / FedOpt aggregation strategies
+- [ ] Personalized FL (per-hospital fine-tuning)
+- [ ] Docker images for server and clients
+- [ ] Automated Kubernetes deployment pipeline
+- [ ] Extend to MIMIC-IV or a richer dataset
 
 ---
 
-## 🚧 Roadmap
+## Contributing
 
-### Phase 1: Core Demo (Current)
-- [x] Synthetic data generation
-- [x] Basic FL implementation
-- [x] AWS deployment
-- [x] MLflow tracking
-
-### Phase 2: Enhancements (Next)
-- [ ] Real healthcare data (MIMIC-IV)
-- [ ] Advanced FL algorithms (FedOpt, FedProx)
-- [ ] Personalized FL
-- [ ] Client selection strategies
-
-### Phase 3: Production (Future)
-- [ ] Model versioning & registry
-- [ ] A/B testing framework
-- [ ] Gradual rollout
-- [ ] Multi-cloud support
+Contributions welcome!  Please fork the repository, create a feature branch, and submit a pull request.
 
 ---
 
-## 📚 Documentation
+## License
 
-- **[High-Level Design](HIGH_LEVEL_DESIGN.md)**: Comprehensive architecture document
-- **[API Reference](docs/API.md)**: Code documentation
-- **[Deployment Guide](docs/DEPLOYMENT.md)**: Step-by-step AWS setup
-- **[Troubleshooting](docs/TROUBLESHOOTING.md)**: Common issues and fixes
-
----
-
-## 🤝 Contributing
-
-Contributions welcome! Please:
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Submit a pull request
-
----
-
-## 📜 License
-
-MIT License - see [LICENSE](LICENSE) file
-
----
-
-## 📞 Contact & Support
-
-- **Issues**: GitHub Issues
-- **Discussions**: GitHub Discussions
-- **Email**: fl-demo@example.com
-
----
-
-## 🌟 Acknowledgments
-
-- **Flower Framework**: For excellent FL infrastructure
-- **PyTorch Opacus**: For differential privacy
-- **AWS**: For cloud infrastructure
-- **Healthcare ML Community**: For inspiring use cases
-
----
-
-## 📊 Citation
-
-If you use this project in your research, please cite:
-
-```bibtex
-@software{fl_healthcare_demo,
-  title = {Federated Learning Demo: Healthcare Risk Prediction},
-  author = {Your Team},
-  year = {2026},
-  url = {https://github.com/yourorg/fl-healthcare-demo}
-}
-```
-
----
-
-**Ready to get started?** 🚀 Check out [HIGH_LEVEL_DESIGN.md](HIGH_LEVEL_DESIGN.md) for the complete architecture!
+MIT License - see [LICENSE](LICENSE)

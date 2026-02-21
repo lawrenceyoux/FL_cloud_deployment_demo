@@ -1,6 +1,12 @@
 # Technical Specifications
 ## Federated Learning Healthcare Demo
 
+> **Note**: This document describes the intended final-state technical specifications.
+> The **current implementation** uses a much simpler stack:
+> tabular Kaggle stroke data, a small MLP (`StrokeNet`), FedAvg, and MLflow.
+> Multimodal data structures, differential privacy, and the full AWS/EKS stack described
+> here are **not yet implemented**. See [README.md](README.md) for what currently works.
+
 ---
 
 ## 1. Data Model Specification

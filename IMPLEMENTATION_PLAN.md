@@ -1,6 +1,12 @@
 # Implementation Plan: Detailed Phase-by-Phase Guide
 ## Federated Learning Healthcare Demo - Stroke Prediction
 
+> **Note**: This document describes a planned multi-phase implementation.
+> The **currently implemented** portion is the local development prototype in `local_dev/`:
+> stroke prediction with FedAvg, 3 simulated hospitals, MLflow tracking, and EKS scaffolding.
+> Phases involving synthetic data generation, advanced privacy, Streamlit monitoring, and
+> full AWS automation are **not yet complete**. See [README.md](README.md) for what currently works.
+
 > **Purpose**: Break down high-level design into actionable implementation phases with detailed steps, timelines, and deliverables
 
 ---

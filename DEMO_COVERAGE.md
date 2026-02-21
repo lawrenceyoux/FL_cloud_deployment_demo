@@ -1,6 +1,17 @@
 # Demo Coverage: Research Concepts
 ## Federated Learning Healthcare Demo - Stroke Prediction
 
+> **Note**: This document describes planned coverage against ML research concepts.
+> Many items marked "complete" below reflect the intended final-state design and are
+> **not yet implemented** in the current codebase.
+>
+> What is currently working (see `local_dev/` and [README.md](README.md)):
+> - FedAvg with 3 non-IID hospitals on the Kaggle stroke dataset
+> - `StrokeNet` MLP, MLflow tracking, per-hospital accuracy/F1/recall/AUC metrics
+>
+> Not yet implemented: FedProx/FedOpt, Ray, Spark, autoencoders, differential privacy,
+> Streamlit dashboard, SageMaker, full AWS/EKS automation.
+
 > **This document explicitly shows how our demo covers key ML research concepts**
 
 ---
