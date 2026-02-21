@@ -531,85 +531,222 @@ kubectl top nodes
 
 ---
 
-## Day 6-7: Data Acquisition & Exploration
+## Day 6-7: Automated Data Pipeline
 
-### 2.1 Download Stroke Dataset
-**Time**: 2 hours
-
-**Steps**:
-
-1. **Download from Kaggle**
-   ```bash
-   # Install Kaggle CLI
-   pip install kaggle
-   
-   # Set up Kaggle credentials
-   # 1. Go to https://www.kaggle.com/account
-   # 2. Create API token (downloads kaggle.json)
-   # 3. Move to ~/.kaggle/kaggle.json (or C:\Users\<user>\.kaggle\ on Windows)
-   
-   # Download dataset
-   kaggle datasets download -d fedesoriano/stroke-prediction-dataset
-   
-   # Extract
-   unzip stroke-prediction-dataset.zip -d data/raw/
-   
-   # Verify
-   ls -lh data/raw/
-   # Should see: healthcare-dataset-stroke-data.csv (~300KB, 5,110 rows)
-   ```
-
-2. **Initial Data Exploration** (Jupyter Notebook)
-   ```bash
-   jupyter notebook notebooks/01_data_exploration.ipynb
-   ```
-   
-   **Analysis to perform**:
-   - Load CSV with pandas
-   - Check shape: (5110, 12)
-   - View column types, missing values
-   - Class distribution: stroke=0 (95.1%), stroke=1 (4.9%) - imbalanced!
-   - Summary statistics per feature
-   - Correlation matrix
-   - Distribution plots (age, BMI, glucose)
-   - Outlier detection
-
-3. **Data Quality Assessment**
-   
-   **Expected findings**:
-   - **Missing values**: 
-     - BMI: ~4% missing (~200 rows)
-     - smoking_status: Has "Unknown" category
-   - **Outliers**: 
-     - BMI: Some values outside normal range (15-60)
-     - avg_glucose_level: Wide range (55-271)
-   - **Categorical features**: 
-     - gender: Male, Female, Other
-     - work_type: 5 categories
-     - smoking_status: 4 categories
-   - **Numerical features**:
-     - age: 0.08 to 82 years (contains children!)
-     - hypertension, heart_disease: Binary (0/1)
-
-4. **Document Findings**
-   - Create `data/DATA_REPORT.md`
-   - Include:
-     - Dataset overview
-     - Feature descriptions
-     - Data quality issues
-     - Recommended preprocessing steps
-     - Non-IID split strategy
-
-**Deliverables**:
-- ✅ Dataset downloaded locally
-- ✅ Exploratory notebook completed
-- ✅ Data quality report
-- ✅ Baseline statistics documented
+> **Current state**: The raw CSV (`local_dev/data/raw/healthcare-dataset-stroke-data.csv`) and
+> processed hospital splits (`local_dev/data/processed/hospital_1/2/3.csv`) already exist locally.
+> A working `local_dev/preprocess.py` already produces those files.
+>
+> **Goal for Day 6-7**: Promote the manual local script into a **reproducible, automated pipeline**
+> that validates data quality and publishes processed splits to S3 so EKS containers can consume
+> them — without hardcoding paths or relying on a developer's laptop.
 
 ---
 
-### 2.2 Data Preprocessing Pipeline
-**Time**: 6 hours
+### How do data engineers approach this?
+
+Two common patterns:
+
+| Approach | When used | Tools |
+|----------|-----------|-------|
+| **CI/CD pipeline** (GitHub Actions) | Small datasets, demo/educational, team already uses GHA | GitHub Actions, `pandas`, custom scripts |
+| **Dedicated orchestration** | Production, large data (GB–TB), complex DAGs, scheduling | AWS Glue, AWS Step Functions, Apache Airflow, Prefect |
+
+**Recommendation for this demo**: GitHub Actions — a third manual-trigger workflow
+(`.github/workflows/data-pipeline.yml`) that runs the full pipeline end to end. This is consistent
+with the existing CI pattern (Terraform, K8s), keeps all automation in one place, and is fast to
+implement for a 5 K-row CSV. A production system would move to Step Functions or Glue, but for a
+sandbox demo the difference is irrelevant.
+
+---
+
+### 2.1 Pipeline Design & Data Flow
+**Time**: 2 hours (design + add validation script)
+
+**Is this CI or CD?** Both — split across the four jobs:
+
+| Job | Phase | Reasoning |
+|-----|-------|-----------|
+| `validate-raw` | **CI** | Quality gate on the input data — same role as a test suite in software CI |
+| `preprocess` | **CI** | Transformation step; output is the "build artifact" |
+| `validate-processed` | **CI** | Acceptance test on the artifact before it is published |
+| `publish-to-s3` | **CD** | Deploys the validated artifact to the data store — this IS the CD step |
+
+The processed CSV **is** an artifact. Uploading it to S3 is exactly equivalent to pushing a
+Docker image to a registry: it makes a tested artifact available for downstream consumers
+(EKS containers). Data engineers call this the "publish" or "materialize" step.
+
+> **S3 buckets already exist** — provisioned by the Terraform workflow (Day 3-4):
+> `fl-demo-data-hospital-1`, `fl-demo-data-hospital-2`, `fl-demo-data-hospital-3`.
+> No bucket creation needed here.
+
+**Why separate jobs (not steps)?**  
+In GitHub Actions, each **job** shows up as a distinct named block in the workflow visualization
+with its own pass/fail badge, duration, and logs. Steps inside one job collapse into a single
+block. Using one job per stage gives you instant visual feedback on *which* stage failed without
+digging into logs — this is exactly how professional data pipelines are structured.
+
+**Data flow**:
+```
+local_dev/data/raw/          ┌──────────────────────────────────────────────┐
+├── *.csv  ───────────────►  │  Job 1: validate-raw   (CI)                  │
+                             │  schema, row count, stroke rate checks        │
+                             └──────────────┬───────────────────────────────┘
+                                            │ passes
+                                            ▼
+                             ┌──────────────────────────────────────────────┐
+                             │  Job 2: preprocess     (CI)                  │
+                             │  local_dev/preprocess.py — no rewrite        │
+                             │  outputs saved as GHA artifact (audit trail) │
+                             └──────────────┬───────────────────────────────┘
+                                            │ passes
+                                            ▼
+                             ┌──────────────────────────────────────────────┐
+                             │  Job 3: validate-processed  (CI)             │
+                             │  null check, per-hospital stroke rates,      │
+                             │  column schema, dtype checks                 │
+                             └──────────────┬───────────────────────────────┘
+                                            │ passes
+                                            ▼
+                             ┌──────────────────────────────────────────────┐
+                             │  Job 4: publish-to-s3  (CD)                  │
+                             │  aws s3 cp → fl-demo-data-hospital-1/2/3     │
+                             │  (skipped if upload_to_s3 = false)           │
+                             └──────────────────────────────────────────────┘
+                                            │
+                                            ▼
+                                       AWS S3 buckets
+                                  fl-demo-data-hospital-1/processed/
+                                  fl-demo-data-hospital-2/processed/
+                                  fl-demo-data-hospital-3/processed/
+```
+
+If any job fails, all downstream jobs are skipped automatically (`needs:` chain).
+Bad data never reaches S3 or EKS containers.
+
+**Files involved**:
+
+| File | Status | Action |
+|------|--------|--------|
+| `local_dev/data/raw/healthcare-dataset-stroke-data.csv` | ✅ exists | No change — used as pipeline input |
+| `local_dev/preprocess.py` | ✅ exists, working | No rewrite — called as-is by Job 2 |
+| `data/scripts/validate.py` | ❌ missing | **Create**: raw + processed validation logic |
+| `.github/workflows/data-pipeline.yml` | ❌ missing | **Create**: 4-job manual pipeline workflow |
+
+---
+
+### 2.2 Validation Script Design
+**Time**: 3 hours
+
+**`data/scripts/validate.py`** — two callable modes: `--stage raw` and `--stage processed`
+
+**Raw validation checks** (run on the Kaggle CSV before any transformation):
+
+| Check | Expected value | Fail condition |
+|-------|---------------|----------------|
+| File exists | — | Missing file → hard stop |
+| Row count | 5 110 ± 5% | < 4 854 or > 5 366 |
+| Required columns | `id, gender, age, hypertension, heart_disease, ever_married, work_type, Residence_type, avg_glucose_level, bmi, smoking_status, stroke` | Any column missing |
+| Target present | `stroke` column, values in {0, 1} | Invalid values |
+| Overall stroke rate | 4–6% | Outside range |
+| BMI null rate | < 5% | Exceeds threshold |
+| No fully-empty rows | — | Any all-null row |
+
+**Processed validation checks** (run on each `hospital_N.csv` after `preprocess.py`):
+
+| Check | Expected value |
+|-------|---------------|
+| No null values anywhere | 0 nulls |
+| Row counts sum ≈ 5 110 | Total within 5% |
+| Hospital 1 stroke rate | 8–18% |
+| Hospital 2 stroke rate | 1–6% |
+| Hospital 3 stroke rate | 3–9% |
+| Expected one-hot columns present | `work_type_*`, `smoking_status_*` |
+| All numeric dtypes | No object columns remaining |
+
+Exit code 0 = pass, non-zero = fail (GitHub Actions treats non-zero as step failure).
+
+---
+
+### 2.3 GitHub Actions Data Pipeline Workflow
+**Time**: 2 hours
+
+**`.github/workflows/data-pipeline.yml`** — manually triggered, same pattern as existing workflows.
+
+**4 jobs — each visible as a separate block in the GHA UI**:
+
+```
+validate-raw  ──►  preprocess  ──►  validate-processed  ──►  publish-to-s3
+    (CI)              (CI)                 (CI)                  (CD)
+```
+
+All jobs are sequential via `needs:`. A failing job blocks all downstream jobs.
+
+**Workflow inputs** (selectable at trigger time):
+
+| Input | Default | Purpose |
+|-------|---------|---------|
+| `upload_to_s3` | `true` | Set `false` for dry-run (validate + preprocess only, no S3 write) |
+
+**Key steps per job**:
+
+**Job 1 — `validate-raw`** (CI gate on input)
+- Checkout repo
+- `pip install pandas`
+- `python data/scripts/validate.py --stage raw --input local_dev/data/raw/healthcare-dataset-stroke-data.csv`
+- Exits non-zero on any failed check → blocks Jobs 2-4
+
+**Job 2 — `preprocess`** (CI transform)
+- Downloads nothing — raw CSV is in the repo
+- `python local_dev/preprocess.py` (existing script, called unchanged)
+- `uses: actions/upload-artifact` → saves `hospital_1/2/3.csv` as a named GHA artifact (7-day audit trail)
+- Passes artifact name to downstream jobs via `outputs:`
+
+**Job 3 — `validate-processed`** (CI acceptance test)
+- `uses: actions/download-artifact` → fetches artifact from Job 2
+- `python data/scripts/validate.py --stage processed --input ./processed/`
+- Prints per-hospital stats (row count, stroke rate, null count) to job log
+- Exits non-zero on any failed check → blocks Job 4
+
+**Job 4 — `publish-to-s3`** (CD — skipped if `upload_to_s3 == false`)
+- `uses: actions/download-artifact` → fetches the same artifact from Job 2
+- S3 buckets already exist (created by Terraform — no `aws s3 mb` needed)
+- `aws s3 cp hospital_1.csv s3://fl-demo-data-hospital-1/processed/hospital_1.csv`
+- `aws s3 cp hospital_2.csv s3://fl-demo-data-hospital-2/processed/hospital_2.csv`
+- `aws s3 cp hospital_3.csv s3://fl-demo-data-hospital-3/processed/hospital_3.csv`
+- Prints the three S3 URIs to job log — EKS containers consume these paths
+
+**How to trigger**:
+1. Go to **Actions → Data Pipeline — Preprocess & Upload → Run workflow**
+2. Leave `upload_to_s3` as `true` for a real run, or `false` for CI-only dry-run
+3. Click **Run workflow**
+
+**EKS containers** read from S3, not from the repo. The `fl-config` ConfigMap already references
+the correct bucket names. Day 8 (S3 upload) is Job 4 of this workflow — no separate step needed.
+
+---
+
+### 2.4 What changes vs. current local workflow
+
+| Before (Day 6-7 old) | After (Day 6-7 new) |
+|----------------------|---------------------|
+| `python local_dev/preprocess.py` manually | GitHub Actions workflow, one button click |
+| Processed CSVs live only on developer's laptop | Processed CSVs published to S3, accessible by EKS |
+| No data quality checks | Raw + processed validation gates block bad data |
+| No audit trail | Job log + GitHub Actions artifact record every run |
+| Kaggle download step manual | Raw CSV committed to repo (small, non-sensitive educational data) |
+
+**Deliverables**:
+- ✅ `data/scripts/validate.py` created with raw + processed validation logic
+- ✅ `.github/workflows/data-pipeline.yml` created (4-stage pipeline)
+- ✅ Processed hospital CSVs published to S3 hospital buckets
+- ✅ Pipeline is re-runnable and idempotent (`aws s3 cp` overwrites safely)
+- ✅ EKS containers can now pull data from S3 without manual steps
+
+---
+
+### 2.2 Data Preprocessing Pipeline (reference — existing script)
+**Time**: already done
 
 **Steps**:
 
@@ -770,84 +907,38 @@ kubectl top nodes
 
 ---
 
-## Day 8: Upload Data to S3
+## Day 8: Publish to S3 & Verify EKS Access
 
-### 2.3 Cloud Data Storage
-**Time**: 3 hours
+### 2.3 CD Step — Publish Processed Data
+**Time**: included in Day 6-7 pipeline (Job 4)
 
-**Steps**:
+> **Day 8 is now Job 4 (`publish-to-s3`) of the data pipeline workflow defined in Day 6-7.**
+> There is no separate manual upload step. Run the full pipeline to publish.
 
-1. **Upload Processed Data**
-   ```bash
-   # Upload hospital data to respective buckets
-   aws s3 sync data/processed/hospital_1/ s3://fl-demo-data-hospital-1/ --profile fl-demo
-   aws s3 sync data/processed/hospital_2/ s3://fl-demo-data-hospital-2/ --profile fl-demo
-   aws s3 sync data/processed/hospital_3/ s3://fl-demo-data-hospital-3/ --profile fl-demo
-   
-   # Upload preprocessing artifacts
-   aws s3 cp data/processed/scaler.pkl s3://fl-demo-models/artifacts/ --profile fl-demo
-   aws s3 cp data/processed/feature_names.json s3://fl-demo-models/artifacts/ --profile fl-demo
-   
-   # Verify
-   aws s3 ls s3://fl-demo-data-hospital-1/ --profile fl-demo
-   ```
+The S3 buckets (`fl-demo-data-hospital-1/2/3`) were created by the Terraform workflow and already
+exist. `aws s3 cp` is idempotent — re-running the pipeline safely overwrites the files.
 
-2. **Set Bucket Policies** (Security)
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Deny",
-         "Principal": "*",
-         "Action": "s3:GetObject",
-         "Resource": "arn:aws:s3:::fl-demo-data-hospital-1/*",
-         "Condition": {
-           "StringNotEquals": {
-             "aws:PrincipalArn": "arn:aws:iam::<account>:role/eks-node-role"
-           }
-         }
-       }
-     ]
-   }
-   ```
-   
-   Apply to each hospital bucket to ensure data isolation.
+**After the pipeline completes, verify EKS can reach the data** (one-time spot check):
 
-3. **Create Data Catalog** (AWS Glue - Optional)
-   ```bash
-   # Create Glue database
-   aws glue create-database \
-     --database-input Name=fl_stroke_data \
-     --profile fl-demo
-   
-   # Crawl S3 data to create table schemas
-   # (Can be done via AWS Console)
-   ```
+```bash
+# Spin up a temporary pod with the AWS CLI image
+kubectl run test-s3-access \
+  --image=amazon/aws-cli \
+  --namespace=federated-learning \
+  --restart=Never \
+  --command -- sleep 300
 
-4. **Test Data Access from EKS**
-   ```bash
-   # Create test pod
-   kubectl run test-s3-access \
-     --image=amazon/aws-cli \
-     --namespace=federated-learning \
-     --command -- sleep 3600
-   
-   # Exec into pod
-   kubectl exec -it test-s3-access -n federated-learning -- bash
-   
-   # Test S3 access (using IRSA - IAM Roles for Service Accounts)
-   aws s3 ls s3://fl-demo-data-hospital-1/
-   
-   # Cleanup
-   kubectl delete pod test-s3-access -n federated-learning
-   ```
+# List the published data (pod uses IRSA — no key needed)
+kubectl exec -it test-s3-access -n federated-learning -- \
+  aws s3 ls s3://fl-demo-data-hospital-1/processed/
+
+# Cleanup
+kubectl delete pod test-s3-access -n federated-learning
+```
 
 **Deliverables**:
-- ✅ All data uploaded to S3
-- ✅ Bucket policies configured
-- ✅ Data accessible from EKS
-- ✅ Data catalog created (optional)
+- ✅ Processed CSVs published to S3 via pipeline Job 4 (CD)
+- ✅ EKS pods can read hospital data via IRSA (no credentials in containers)
 
 ---
 

@@ -1,0 +1,179 @@
+name: Data Pipeline — Preprocess & Upload
+
+# Manually triggered after the Terraform workflow has provisioned S3 buckets.
+# Re-running is safe — all steps are idempotent.
+#
+# CI/CD split:
+#   Jobs 1-3  → CI   (validate → transform → validate)
+#   Job  4    → CD   (publish validated artifact to S3)
+#
+# Set upload_to_s3 = false for a dry-run (CI only — no S3 write).
+on:
+  workflow_dispatch:
+    inputs:
+      upload_to_s3:
+        description: "Publish processed CSVs to S3 (set false for CI-only dry-run)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  ARTIFACT_NAME: processed-hospital-csvs
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 1 — validate-raw                                                   (CI)
+# Quality gate on the Kaggle CSV before any transformation runs.
+# Catches: wrong file version, missing columns, schema drift, truncation.
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  validate-raw:
+    name: "1 — Validate raw CSV (CI)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install pandas
+
+      - name: Validate raw Kaggle CSV
+        run: |
+          python data/scripts/validate.py \
+            --stage raw \
+            --input local_dev/data/raw/healthcare-dataset-stroke-data.csv
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 2 — preprocess                                                      (CI)
+# Runs local_dev/preprocess.py unchanged.
+# Output CSVs are uploaded as a GHA artifact (7-day audit trail).
+# ─────────────────────────────────────────────────────────────────────────────
+  preprocess:
+    name: "2 — Preprocess & split into 3 hospitals (CI)"
+    runs-on: ubuntu-latest
+    needs: validate-raw
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install pandas
+
+      - name: Run preprocess.py
+        working-directory: local_dev
+        run: python preprocess.py
+
+      - name: Print output stats
+        working-directory: local_dev
+        run: |
+          echo "── Processed files ──────────────────────────────────"
+          for f in data/processed/hospital_*.csv; do
+            rows=$(tail -n +2 "$f" | wc -l)
+            echo "  $f  →  ${rows} rows"
+          done
+
+      - name: Upload processed CSVs as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: local_dev/data/processed/hospital_*.csv
+          retention-days: 7
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 3 — validate-processed                                             (CI)
+# Acceptance test on the artifact before it is published to S3.
+# Catches: nulls, wrong stroke rates, missing one-hot columns, object dtypes.
+# ─────────────────────────────────────────────────────────────────────────────
+  validate-processed:
+    name: "3 — Validate processed CSVs (CI)"
+    runs-on: ubuntu-latest
+    needs: preprocess
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download processed artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: processed/
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: pip install pandas
+
+      - name: Validate processed hospital CSVs
+        run: |
+          python data/scripts/validate.py \
+            --stage processed \
+            --input processed/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Job 4 — publish-to-s3                                                  (CD)
+# Deploys the validated artifact to the hospital S3 buckets.
+# Skipped when upload_to_s3 == false (dry-run mode).
+# Buckets already exist — created by the Terraform workflow.
+# ─────────────────────────────────────────────────────────────────────────────
+  publish-to-s3:
+    name: "4 — Publish to S3 (CD)"
+    runs-on: ubuntu-latest
+    needs: validate-processed
+    if: github.event.inputs.upload_to_s3 == 'true'
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Download processed artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: processed/
+
+      - name: Publish hospital CSVs to S3
+        run: |
+          aws s3 cp processed/hospital_1.csv \
+            s3://fl-demo-data-hospital-1/processed/hospital_1.csv
+          aws s3 cp processed/hospital_2.csv \
+            s3://fl-demo-data-hospital-2/processed/hospital_2.csv
+          aws s3 cp processed/hospital_3.csv \
+            s3://fl-demo-data-hospital-3/processed/hospital_3.csv
+
+      - name: Print published S3 URIs
+        run: |
+          echo "── Published data locations ──────────────────────────────"
+          echo "  s3://fl-demo-data-hospital-1/processed/hospital_1.csv"
+          echo "  s3://fl-demo-data-hospital-2/processed/hospital_2.csv"
+          echo "  s3://fl-demo-data-hospital-3/processed/hospital_3.csv"
+          echo ""
+          echo "── Verify with aws s3 ls ──────────────────────────────────"
+          aws s3 ls s3://fl-demo-data-hospital-1/processed/
+          aws s3 ls s3://fl-demo-data-hospital-2/processed/
+          aws s3 ls s3://fl-demo-data-hospital-3/processed/
