@@ -1,0 +1,88 @@
+# kubernetes/jobs/train-baseline.yaml
+#
+# Kubernetes Job that runs Phase 3 baseline training on EKS.
+# The training process logs all metrics + model artifacts to the
+# MLflow server running in the mlops namespace.
+#
+# This file is a TEMPLATE — three variables are substituted by the
+# "Train Baseline on EKS" GitHub Actions workflow before applying:
+#   FL_IMAGE      — ECR image URI  (e.g. 123456789.dkr.ecr.us-east-1.amazonaws.com/fl-stroke:abc123)
+#   TRAIN_EPOCHS  — number of training epochs (default: 50)
+#   TRAIN_MODEL   — model architecture: simple | embeddings (default: embeddings)
+#   TRAIN_LOSS    — loss function: weighted_bce | focal | bce (default: weighted_bce)
+#   RUN_ID        — short git SHA / timestamp injected by workflow for unique Job naming
+#
+# To apply manually (after setting the env vars):
+#   export FL_IMAGE=<ecr-uri>  TRAIN_EPOCHS=50  TRAIN_MODEL=embeddings TRAIN_LOSS=weighted_bce  RUN_ID=manual
+#   envsubst < kubernetes/jobs/train-baseline.yaml | kubectl apply -f -
+#
+# To stream logs after applying:
+#   kubectl logs -f job/train-baseline-${RUN_ID} -n federated-learning
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: train-baseline-${RUN_ID}
+  namespace: federated-learning
+  labels:
+    app: fl-training
+    phase: baseline
+    run-id: "${RUN_ID}"
+spec:
+  # Do not restart on failure — surface the error in logs
+  backoffLimit: 0
+  # Clean up 10 minutes after completion so the Job doesn't clutter the namespace
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: fl-training
+        phase: baseline
+        run-id: "${RUN_ID}"
+    spec:
+      restartPolicy: Never
+      # IRSA service account — gives the pod read access to S3 hospital buckets
+      # and write access to fl-demo-mlflow (for artifact storage).
+      # Created by Terraform; replace <account-id> in mlflow.yaml with the real ARN.
+      serviceAccountName: mlflow-sa
+
+      containers:
+      - name: trainer
+        image: ${FL_IMAGE}
+        command: ["python", "-m", "src.train_baseline"]
+        args:
+          - "--epochs"
+          - "${TRAIN_EPOCHS}"
+          - "--model"
+          - "${TRAIN_MODEL}"
+          - "--loss"
+          - "${TRAIN_LOSS}"
+
+        env:
+        # ── MLflow tracking ──────────────────────────────────────────
+        - name: MLFLOW_TRACKING_URI
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: MLFLOW_TRACKING_URI
+        # ── AWS region (needed if USE_S3=1) ─────────────────────────
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: AWS_REGION
+        # ── Data: default is baked-in image data; set USE_S3=1 to
+        #    pull fresh splits from S3 after the data-pipeline runs ──
+        - name: USE_S3
+          value: "0"
+        # Uncomment below and set USE_S3=1 to read hospital data from S3:
+        # - name: S3_RAW_BUCKET
+        #   value: "fl-demo-data-hospital-1"
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2"

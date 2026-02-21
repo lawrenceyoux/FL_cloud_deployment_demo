@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mlflow-server
+  namespace: mlops
+  labels:
+    app: mlflow-server
+spec:
+  serviceName: mlflow-server
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow-server
+  template:
+    metadata:
+      labels:
+        app: mlflow-server
+    spec:
+      serviceAccountName: mlflow-sa   # IRSA-bound SA for S3 access (created by Terraform)
+      initContainers:
+      # Wait for postgres to accept connections before MLflow starts
+      - name: wait-for-postgres
+        image: postgres:15-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h postgres.mlops.svc.cluster.local -U mlflow; do
+            echo "Waiting for postgres..."; sleep 3
+          done
+        env:
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+      containers:
+      - name: mlflow
+        image: ghcr.io/mlflow/mlflow:2.11.0
+        ports:
+        - containerPort: 5000
+          name: http
+        env:
+        - name: BACKEND_STORE_URI
+          value: "postgresql://mlflow:$(POSTGRES_PASSWORD)@postgres.mlops.svc.cluster.local:5432/mlflow"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        - name: DEFAULT_ARTIFACT_ROOT
+          value: "s3://fl-demo-mlflow/artifacts"
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: AWS_REGION
+        command:
+        - mlflow
+        - server
+        - --host
+        - "0.0.0.0"
+        - --port
+        - "5000"
+        - --backend-store-uri
+        - "postgresql://mlflow:$(POSTGRES_PASSWORD)@postgres.mlops.svc.cluster.local:5432/mlflow"
+        - --default-artifact-root
+        - "s3://fl-demo-mlflow/artifacts"
+        - --serve-artifacts
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow-server
+  namespace: mlops
+  labels:
+    app: mlflow-server
+spec:
+  selector:
+    app: mlflow-server
+  ports:
+  - name: http
+    port: 5000
+    targetPort: 5000
+    protocol: TCP
+  # ClusterIP so FL clients in the cluster reach it via DNS.
+  # For browser access use: kubectl port-forward -n mlops svc/mlflow-server 5000:5000
+  type: ClusterIP
+---
+# ServiceAccount for IRSA — Terraform's OIDC provider binds this to an IAM role
+# that has s3:GetObject/PutObject on fl-demo-mlflow bucket.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mlflow-sa
+  namespace: mlops
+  annotations:
+    # Replace <account-id> and <region> after Terraform apply outputs the role ARN
+    eks.amazonaws.com/role-arn: "arn:aws:iam::<account-id>:role/fl-demo-mlflow-irsa"

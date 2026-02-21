@@ -1,0 +1,229 @@
+name: Train Baseline on EKS
+
+# Manually triggered — build the FL Docker image, push to ECR, and run
+# the Phase 3 baseline training Job on EKS.  Results are logged to the
+# MLflow server already running in the cluster (deployed by k8s-setup.yml).
+#
+# Prerequisites (run once first):
+#   1. "Terraform — FL Infrastructure"  (apply)  — provisions EKS, S3, ECR repo
+#   2. "K8s — Cluster Setup & Add-ons"           — deploys MLflow to EKS
+#
+# Workflow flow:
+#   build-push  ──►  run-on-eks
+#       │                 │
+#   Docker image    K8s Job (train_baseline.py)
+#   pushed to ECR   logs streamed here
+#                   metrics → MLflow on EKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      epochs:
+        description: "Training epochs"
+        required: false
+        default: "50"
+      model:
+        description: "Model architecture"
+        required: false
+        default: "embeddings"
+        type: choice
+        options:
+          - simple
+          - embeddings
+      loss:
+        description: "Loss function"
+        required: false
+        default: "weighted_bce"
+        type: choice
+        options:
+          - weighted_bce
+          - focal
+          - bce
+      skip_job:
+        description: "Build & push image only — do not run EKS Job"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+env:
+  ECR_REPO:     fl-stroke
+  CLUSTER_NAME: fl-demo-cluster
+  NAMESPACE:    federated-learning
+
+# ── Job 1: Build Docker image and push to ECR ─────────────────────────────────
+jobs:
+  build-push:
+    name: "Build & push Docker image"
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.ecr.outputs.image_uri }}
+      run_id:    ${{ steps.run_id.outputs.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive short run ID (git SHA prefix)
+        id: run_id
+        run: echo "run_id=$(echo $GITHUB_SHA | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Create ECR repository (idempotent)
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPO" \
+            --region "${{ secrets.AWS_REGION }}" > /dev/null 2>&1 \
+          || aws ecr create-repository \
+               --repository-name "$ECR_REPO" \
+               --region "${{ secrets.AWS_REGION }}" \
+               --image-scanning-configuration scanOnPush=true
+
+      - name: Login to Amazon ECR
+        id: ecr
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION }}"
+          REGISTRY="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
+          IMAGE_URI="${REGISTRY}/${ECR_REPO}:${{ steps.run_id.outputs.run_id }}"
+
+          aws ecr get-login-password --region "$REGION" | \
+            docker login --username AWS --password-stdin "$REGISTRY"
+
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "Image URI: ${IMAGE_URI}"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --file docker/Dockerfile \
+            --tag "${{ steps.ecr.outputs.image_uri }}" \
+            --tag "${{ steps.ecr.outputs.image_uri }}-latest" \
+            .
+
+      - name: Push to ECR
+        run: |
+          docker push "${{ steps.ecr.outputs.image_uri }}"
+          echo "✅ Pushed: ${{ steps.ecr.outputs.image_uri }}"
+
+# ── Job 2: Run training Job on EKS ────────────────────────────────────────────
+  run-on-eks:
+    name: "Run training Job on EKS"
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: github.event.inputs.skip_job != 'true'
+
+    env:
+      FL_IMAGE:     ${{ needs.build-push.outputs.image_uri }}
+      RUN_ID:       ${{ needs.build-push.outputs.run_id }}
+      TRAIN_EPOCHS: ${{ github.event.inputs.epochs }}
+      TRAIN_MODEL:  ${{ github.event.inputs.model }}
+      TRAIN_LOSS:   ${{ github.event.inputs.loss }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region "${{ secrets.AWS_REGION }}" \
+            --name  "$CLUSTER_NAME"
+
+      - name: Grant caller cluster-admin access
+        run: |
+          CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+          aws eks create-access-entry \
+            --cluster-name "$CLUSTER_NAME" \
+            --principal-arn "$CALLER_ARN" \
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
+          aws eks associate-access-policy \
+            --cluster-name "$CLUSTER_NAME" \
+            --principal-arn "$CALLER_ARN" \
+            --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+            --access-scope type=cluster \
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
+
+      - name: Check MLflow is running
+        run: |
+          echo "Checking MLflow server in mlops namespace…"
+          kubectl get pods -n mlops -l app=mlflow-server
+          STATUS=$(kubectl get pods -n mlops -l app=mlflow-server \
+                     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+          if [ "$STATUS" != "Running" ]; then
+            echo "⚠️  MLflow pod is not Running (status=$STATUS)."
+            echo "Run the 'K8s — Cluster Setup & Add-ons' workflow first."
+            exit 1
+          fi
+          echo "✅ MLflow is Running"
+
+      - name: Delete previous Job with same run-id (if any)
+        run: |
+          kubectl delete job "train-baseline-${RUN_ID}" \
+            -n "$NAMESPACE" --ignore-not-found=true
+
+      - name: Apply training Job  (envsubst replaces FL_IMAGE / TRAIN_* / RUN_ID)
+        run: |
+          apt-get install -y gettext-base -q 2>/dev/null || true    # ubuntu-latest already has it
+          envsubst < kubernetes/jobs/train-baseline.yaml | kubectl apply -f -
+          echo ""
+          echo "Job submitted: train-baseline-${RUN_ID}"
+          echo "Watching pod come up…"
+          kubectl wait --for=condition=ready pod \
+            -l "run-id=${RUN_ID}" \
+            -n "$NAMESPACE" \
+            --timeout=120s || true   # pod may finish before "ready" — that's fine
+
+      - name: Stream training logs
+        run: |
+          echo "═══ Training logs (streaming) ═══════════════════════════════"
+          kubectl logs \
+            --selector="run-id=${RUN_ID}" \
+            --namespace="$NAMESPACE" \
+            --follow \
+            --pod-running-timeout=120s \
+          || true
+          echo "═══ End of streamed logs ════════════════════════════════════"
+
+      - name: Wait for Job completion and check exit code
+        run: |
+          echo "Waiting for Job to complete (timeout: 60 min)…"
+          kubectl wait \
+            --for=condition=complete \
+            --timeout=3600s \
+            job/"train-baseline-${RUN_ID}" \
+            -n "$NAMESPACE"
+          echo "✅ Job completed successfully"
+
+      - name: Show final job status
+        if: always()
+        run: |
+          echo "=== Job status ==="
+          kubectl describe job "train-baseline-${RUN_ID}" -n "$NAMESPACE" || true
+          echo ""
+          echo "=== Pod exit / conditions ==="
+          kubectl get pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" -o wide || true
+          echo ""
+          echo "══════════════════════════════════════════════════════════════"
+          echo "  MLflow UI — view results with:"
+          echo "    kubectl port-forward -n mlops svc/mlflow-server 5000:5000"
+          echo "    open http://localhost:5000"
+          echo "  Experiment: stroke-prediction-baseline"
+          echo "══════════════════════════════════════════════════════════════"

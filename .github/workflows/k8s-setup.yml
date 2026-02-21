@@ -81,6 +81,29 @@ jobs:
       - name: Apply ConfigMaps
         run: kubectl apply -f kubernetes/configmaps/
 
+      # ── MLflow Stack (postgres + mlflow-server) ────────────────────────────
+      # postgres Secret is embedded in postgres.yaml (stringData).
+      # Both StatefulSets are idempotent via kubectl apply.
+      - name: Deploy PostgreSQL for MLflow backend
+        run: |
+          kubectl apply -f kubernetes/deployments/postgres.yaml
+          echo "Waiting for postgres to be Ready…"
+          kubectl rollout status statefulset/postgres -n mlops --timeout=180s
+
+      - name: Deploy MLflow server
+        run: |
+          kubectl apply -f kubernetes/deployments/mlflow.yaml
+          echo "Waiting for mlflow-server to be Ready…"
+          kubectl rollout status statefulset/mlflow-server -n mlops --timeout=300s
+
+      - name: Verify MLflow endpoint
+        run: |
+          echo "MLflow service:"
+          kubectl get svc mlflow-server -n mlops
+          echo ""
+          echo "To access locally:  kubectl port-forward -n mlops svc/mlflow-server 5000:5000"
+          echo "Cluster-internal:   http://mlflow-server.mlops:5000"
+
       # ── Metrics Server ────────────────────────────────────────────────────
       # Lightweight; required for kubectl top nodes/pods and HPA.
       - name: Install Metrics Server
@@ -126,5 +149,7 @@ jobs:
           kubectl get namespaces
           echo "=== ConfigMaps (federated-learning) ==="
           kubectl get configmaps -n federated-learning
+          echo "=== MLflow stack (mlops) ==="
+          kubectl get statefulsets,pods,svc -n mlops
           echo "=== kube-system deployments ==="
           kubectl get deployments -n kube-system

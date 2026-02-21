@@ -1,0 +1,43 @@
+# Docker build context exclusions
+# Keeps the image small and prevents secrets / local state from leaking in.
+
+# Version control
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Local virtualenvs / conda
+fl_env/
+venv/
+.env
+*.env
+
+# Terraform state (never in images)
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# MLflow local runs (images always log to the server URI)
+mlruns/
+mlflow.db
+
+# Raw data (large, not needed — processed CSVs are copied explicitly)
+local_dev/data/raw/
+
+# Notebooks / docs
+notebooks/
+*.md
+*.txt
+!requirements.txt
+
+# Tests
+tests/
+
+# Editor
+.vscode/
+*.code-workspace
