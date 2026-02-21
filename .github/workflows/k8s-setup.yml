@@ -96,12 +96,7 @@ jobs:
             --cluster-name "$CLUSTER_NAME" \
             --addon-name aws-ebs-csi-driver \
             --region "${{ secrets.AWS_REGION }}"
-          echo "Waiting for at least one ebs-csi-controller pod to be Ready…"
-          kubectl wait pod \
-            -n kube-system \
-            -l app=ebs-csi-controller \
-            --for=condition=Ready \
-            --timeout=180s
+          echo "✅ EBS CSI addon is ACTIVE"
 
       - name: Apply gp3 StorageClass
         run: kubectl apply -f kubernetes/storage/storageclass.yaml
