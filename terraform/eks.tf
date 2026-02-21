@@ -12,25 +12,26 @@ module "eks" {
   subnet_ids = module.vpc.private_subnets
 
   eks_managed_node_groups = {
+    # Pluralsight sandbox limits:
+    #   - Allowed types: t2/t3/t3a/t4g in micro, small, or medium only
+    #   - Max 9 concurrent instances total across all node groups
+    #   - Spot instances not supported
     system = {
       instance_types = ["t3.medium"]
-      min_size       = 2
-      max_size       = 5
+      min_size       = 1
+      max_size       = 3
       desired_size   = 2
 
       labels = { role = "system" }
     }
 
     training = {
-      instance_types = ["c5.2xlarge"]
-      min_size       = 3
-      max_size       = 10
+      instance_types = ["t3.medium"]
+      min_size       = 1
+      max_size       = 4
       desired_size   = 3
 
       labels = { role = "training" }
-
-      # Uncomment to use Spot instances and cut costs ~70%
-      # capacity_type = "SPOT"
     }
   }
 

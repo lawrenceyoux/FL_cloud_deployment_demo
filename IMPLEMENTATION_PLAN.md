@@ -354,14 +354,14 @@ All Terraform files live under `terraform/`. The CI/CD pipeline (section 1.2) ru
      eks_managed_node_groups = {
        system = {
          instance_types = ["t3.medium"]
-         min_size       = 2
-         max_size       = 5
+         min_size       = 1
+         max_size       = 3
          desired_size   = 2
        }
        training = {
-         instance_types = ["c5.2xlarge"]
-         min_size       = 3
-         max_size       = 10
+         instance_types = ["t3.medium"]  # c5.2xlarge not allowed in sandbox
+         min_size       = 1
+         max_size       = 4
          desired_size   = 3
        }
      }
