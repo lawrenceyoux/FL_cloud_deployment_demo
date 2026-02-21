@@ -48,6 +48,44 @@ module "eks" {
   }
 }
 
+# ── IRSA: EBS CSI Driver ─────────────────────────────────────────────────────
+# The AWS EBS CSI driver requires an IAM role bound to its Kubernetes
+# service account (ebs-csi-controller-sa in kube-system) via IRSA.
+# Without this the controller pod crashes with "AccessDenied" on EC2 calls.
+data "aws_iam_policy_document" "ebs_csi_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [module.eks.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks.cluster_oidc_issuer_url}:sub"
+      values   = ["system:serviceaccount:kube-system:ebs-csi-controller-sa"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "${module.eks.cluster_oidc_issuer_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ebs_csi_driver" {
+  name               = "fl-demo-ebs-csi-driver"
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_assume.json
+  tags = { Project = "fl-demo" }
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_driver" {
+  role       = aws_iam_role.ebs_csi_driver.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+}
+
 # ── Outputs ───────────────────────────────────────────────────────────────────
 output "eks_cluster_name" {
   description = "EKS cluster name"
@@ -58,4 +96,9 @@ output "eks_cluster_endpoint" {
   description = "EKS API endpoint"
   value       = module.eks.cluster_endpoint
   sensitive   = true
+}
+
+output "ebs_csi_driver_role_arn" {
+  description = "IAM role ARN for the EBS CSI driver IRSA binding"
+  value       = aws_iam_role.ebs_csi_driver.arn
 }
