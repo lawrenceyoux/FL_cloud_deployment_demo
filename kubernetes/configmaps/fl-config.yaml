@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fl-config
+  namespace: federated-learning
+data:
+  NUM_ROUNDS: "50"
+  MIN_CLIENTS: "3"
+  SERVER_ADDRESS: "fl-server:8080"
+  MLFLOW_TRACKING_URI: "http://mlflow-server.mlops:5000"
+  AWS_REGION: "us-east-1"
+  S3_MODEL_BUCKET: "fl-demo-models"

@@ -1,0 +1,5 @@
+torch>=2.0
+flwr[simulation]>=1.5
+pandas
+scikit-learn
+mlflow

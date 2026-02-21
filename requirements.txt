@@ -1,0 +1,37 @@
+# Core ML
+torch>=2.0
+torchvision
+
+# Federated Learning
+flwr>=1.5
+
+# Data
+pandas
+scikit-learn
+numpy
+pyarrow       # for parquet support
+
+# MLflow
+mlflow
+
+# Dashboard
+streamlit
+plotly
+
+# AWS
+boto3
+awscli
+
+# Privacy
+opacus
+
+# Utilities
+python-dotenv
+joblib
+tqdm
+pyyaml
+
+# Dev / testing
+pytest
+jupyter
+kaggle
