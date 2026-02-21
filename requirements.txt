@@ -1,6 +1,7 @@
-# Core ML
-torch>=2.0
-torchvision
+# ── Production deps (used by Docker image) ───────────────────────────────────
+# torch is installed separately in the Dockerfile with the CPU-only index so
+# that the NVIDIA CUDA wheels (~2.5 GB) are never pulled in.
+# For local dev install requirements-dev.txt on top of this file.
 
 # Federated Learning
 flwr>=1.5
@@ -11,16 +12,11 @@ scikit-learn
 numpy
 pyarrow       # for parquet support
 
-# MLflow
-mlflow
+# MLflow — skinny client only (no Flask/gunicorn/server UI deps)
+mlflow-skinny
 
-# Dashboard
-streamlit
-plotly
-
-# AWS
+# AWS — SDK only; awscli not needed at runtime
 boto3
-awscli
 
 # Privacy
 opacus
@@ -30,8 +26,3 @@ python-dotenv
 joblib
 tqdm
 pyyaml
-
-# Dev / testing
-pytest
-jupyter
-kaggle

@@ -33,7 +33,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Python deps ──────────────────────────────────────────────────────────────
 # Copy requirements first so Docker cache layer survives source-only changes
 COPY requirements.txt ./
+# Install torch CPU-only wheel BEFORE requirements.txt so pip never resolves
+# the default PyPI torch wheel which bundles ~2.5 GB of NVIDIA CUDA libraries.
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch \
+        --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
 # ── Source code ──────────────────────────────────────────────────────────────
