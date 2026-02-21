@@ -41,7 +41,37 @@ jobs:
           aws eks update-kubeconfig \
             --region "${{ secrets.AWS_REGION }}" \
             --name "$CLUSTER_NAME"
-          kubectl get nodes   # quick sanity check
+
+      # ── Grant kubectl access ───────────────────────────────────────────────
+      # terraform-aws-modules/eks v20 does NOT automatically grant the caller
+      # K8s API access unless enable_cluster_creator_admin_permissions = true is
+      # set before the cluster is created. For existing clusters we grant access
+      # directly via the EKS Access API — both commands are idempotent.
+      - name: Grant caller cluster-admin access
+        run: |
+          CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+          echo "Granting cluster-admin to: $CALLER_ARN"
+
+          # Create access entry (no-op if it already exists)
+          aws eks create-access-entry \
+            --cluster-name "$CLUSTER_NAME" \
+            --principal-arn "$CALLER_ARN" \
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null \
+            && echo "Access entry created" \
+            || echo "Access entry already exists — skipping"
+
+          # Attach the cluster-admin policy
+          aws eks associate-access-policy \
+            --cluster-name "$CLUSTER_NAME" \
+            --principal-arn "$CALLER_ARN" \
+            --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+            --access-scope type=cluster \
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null \
+            && echo "Cluster-admin policy associated" \
+            || echo "Policy already associated — skipping"
+
+          # Sanity check: should now return nodes without credential errors
+          kubectl get nodes
 
       # ── Namespaces ────────────────────────────────────────────────────────
       - name: Apply namespaces
