@@ -48,10 +48,20 @@ module "eks" {
   }
 }
 
-# ── IRSA: EBS CSI Driver ─────────────────────────────────────────────────────
-# The AWS EBS CSI driver requires an IAM role bound to its Kubernetes
-# service account (ebs-csi-controller-sa in kube-system) via IRSA.
-# Without this the controller pod crashes with "AccessDenied" on EC2 calls.
+# ── EBS CSI policy on node group roles ───────────────────────────────────────
+# The EBS CSI driver runs on the nodes and needs EC2 permissions to create /
+# attach / detach volumes. Attaching AmazonEBSCSIDriverPolicy to both node
+# group roles is the simplest approach for a demo cluster (no IRSA needed).
+resource "aws_iam_role_policy_attachment" "ebs_csi_system" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  role       = module.eks.eks_managed_node_groups["system"].iam_role_name
+}
+
+resource "aws_iam_role_policy_attachment" "ebs_csi_training" {
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+  role       = module.eks.eks_managed_node_groups["training"].iam_role_name
+}
+
 # ── Outputs ───────────────────────────────────────────────────────────────────
 output "eks_cluster_name" {
   description = "EKS cluster name"

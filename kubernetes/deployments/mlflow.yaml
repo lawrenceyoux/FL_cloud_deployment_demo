@@ -36,7 +36,7 @@ spec:
               key: password
       containers:
       - name: mlflow
-        image: ghcr.io/mlflow/mlflow:2.11.0
+        image: ghcr.io/mlflow/mlflow:latest
         ports:
         - containerPort: 5000
           name: http
