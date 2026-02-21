@@ -83,25 +83,16 @@ jobs:
 
       # ── EBS CSI driver + StorageClass ─────────────────────────────────────
       # Required before any PVC with storageClassName: gp3 can bind.
-      # The addon uses the node instance profile — no separate IRSA role needed
-      # for this demo. Both commands are idempotent (2>/dev/null || true).
+      # No IRSA role needed — EKS node instance profile provides the required
+      # EC2 permissions for this demo cluster.
       - name: Install AWS EBS CSI Driver addon
         run: |
-          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-          ROLE_ARN="arn:aws:iam::${ACCOUNT}:role/fl-demo-ebs-csi-driver"
-          echo "Using IRSA role: $ROLE_ARN"
-
-          # Create addon with IRSA role (no-op if already exists)
+          # Idempotent: create-addon is a no-op if already exists
           aws eks create-addon \
             --cluster-name "$CLUSTER_NAME" \
             --addon-name aws-ebs-csi-driver \
-            --service-account-role-arn "$ROLE_ARN" \
-            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || \
-          aws eks update-addon \
-            --cluster-name "$CLUSTER_NAME" \
-            --addon-name aws-ebs-csi-driver \
-            --service-account-role-arn "$ROLE_ARN" \
-            --region "${{ secrets.AWS_REGION }}"
+            --region "${{ secrets.AWS_REGION }}" \
+            2>/dev/null || true
 
           echo "Waiting for addon to become ACTIVE…"
           aws eks wait addon-active \
