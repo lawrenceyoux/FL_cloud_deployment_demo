@@ -8,6 +8,11 @@ module "eks" {
   # Allow the CI/CD runner and current caller to manage the cluster
   cluster_endpoint_public_access = true
 
+  # In terraform-aws-modules/eks v20+, the cluster creator is NOT automatically
+  # granted K8s API access. This flag adds the Terraform caller (= the same IAM
+  # identity used by GitHub Actions) as a cluster admin via the EKS Access API.
+  enable_cluster_creator_admin_permissions = true
+
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
