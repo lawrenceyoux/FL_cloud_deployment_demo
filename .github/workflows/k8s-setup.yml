@@ -91,9 +91,17 @@ jobs:
             --cluster-name "$CLUSTER_NAME" \
             --addon-name aws-ebs-csi-driver \
             --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
-          echo "Waiting for ebs-csi-controller to roll out…"
-          kubectl rollout status deployment/ebs-csi-controller \
-            -n kube-system --timeout=180s
+          echo "Waiting for addon to become ACTIVE…"
+          aws eks wait addon-active \
+            --cluster-name "$CLUSTER_NAME" \
+            --addon-name aws-ebs-csi-driver \
+            --region "${{ secrets.AWS_REGION }}"
+          echo "Waiting for at least one ebs-csi-controller pod to be Ready…"
+          kubectl wait pod \
+            -n kube-system \
+            -l app=ebs-csi-controller \
+            --for=condition=Ready \
+            --timeout=180s
 
       - name: Apply gp3 StorageClass
         run: kubectl apply -f kubernetes/storage/storageclass.yaml
