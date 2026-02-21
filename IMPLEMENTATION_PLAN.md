@@ -157,75 +157,127 @@
 
 ---
 
-### 1.2 AWS Account Configuration
-**Time**: 3 hours
+### 1.2 AWS Credentials & GitHub Actions CI/CD Setup
+**Time**: 2 hours
+
+> **Assumption**: AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) are already stored as GitHub Actions repository secrets. No local AWS CLI profile configuration is required.
 
 **Steps**:
 
-1. **Create AWS Account & IAM Setup**
-   - Sign up for AWS account (or use existing)
-   - Enable MFA for root account
-   - Create IAM user: `fl-demo-admin`
-   - Attach policies:
-     - AmazonEKSClusterPolicy
-     - AmazonEKSWorkerNodePolicy
-     - AmazonS3FullAccess
-     - CloudWatchFullAccess
-     - IAMFullAccess (for role creation)
-   - Generate access keys
+1. **Verify GitHub Actions Secrets**
 
-2. **Configure AWS CLI**
+   Confirm the following secrets exist under **Settings → Secrets and variables → Actions**:
+
+   | Secret | Description |
+   |--------|-------------|
+   | `AWS_ACCESS_KEY_ID` | IAM user/role access key |
+   | `AWS_SECRET_ACCESS_KEY` | IAM user/role secret key |
+   | `AWS_REGION` | Target region (e.g. `us-east-1`) |
+
+2. **Bootstrap Terraform Remote State (one-time, manual)**
+
+   The S3 bucket and DynamoDB table for Terraform state must exist before the pipeline runs.
+   Run this once from any machine that has AWS access (or via the AWS Console):
+
    ```bash
-   aws configure --profile fl-demo
-   # Enter Access Key ID
-   # Enter Secret Access Key
-   # Default region: us-east-1
-   # Default output: json
-   
-   # Test connection
-   aws s3 ls --profile fl-demo
-   aws sts get-caller-identity --profile fl-demo
-   ```
-
-3. **Set Budget Alerts**
-   - AWS Console → Billing → Budgets
-   - Create budget: $200/month
-   - Set alerts at 50%, 80%, 100%
-   - Email notifications to team
-
-4. **Create S3 Buckets (Manual or Terraform)**
-   ```bash
-   aws s3 mb s3://fl-demo-data-hospital-1 --profile fl-demo
-   aws s3 mb s3://fl-demo-data-hospital-2 --profile fl-demo
-   aws s3 mb s3://fl-demo-data-hospital-3 --profile fl-demo
-   aws s3 mb s3://fl-demo-models --profile fl-demo
-   aws s3 mb s3://fl-demo-mlflow --profile fl-demo
-   aws s3 mb s3://fl-demo-terraform-state --profile fl-demo
-   
-   # Enable versioning for model bucket
+   # State bucket
+   aws s3 mb s3://fl-demo-terraform-state --region us-east-1
    aws s3api put-bucket-versioning \
-     --bucket fl-demo-models \
-     --versioning-configuration Status=Enabled \
-     --profile fl-demo
-   ```
+     --bucket fl-demo-terraform-state \
+     --versioning-configuration Status=Enabled
 
-5. **Terraform Backend Setup**
-   ```bash
-   # Create DynamoDB table for state locking
+   # State locking table
    aws dynamodb create-table \
      --table-name fl-demo-terraform-locks \
      --attribute-definitions AttributeName=LockID,AttributeType=S \
      --key-schema AttributeName=LockID,KeyType=HASH \
      --billing-mode PAY_PER_REQUEST \
-     --profile fl-demo
+     --region us-east-1
    ```
 
+   All other S3 buckets (hospital data, models, MLflow) are created by Terraform — no manual `aws s3 mb` needed.
+
+3. **GitHub Actions CI/CD Pipeline** (`.github/workflows/terraform.yml`)
+
+   The pipeline is **manually triggered** (`workflow_dispatch`) with a choice of action. It never runs on push.
+
+   ```yaml
+   name: Terraform — FL Infrastructure
+
+   on:
+     workflow_dispatch:
+       inputs:
+         action:
+           description: "Terraform action to run"
+           required: true
+           default: plan
+           type: choice
+           options:
+             - plan
+             - apply
+             - destroy
+
+   permissions:
+     contents: read
+
+   env:
+     TF_VERSION: "1.7.5"
+     WORKING_DIR: terraform
+
+   jobs:
+     terraform:
+       name: "Terraform ${{ github.event.inputs.action }}"
+       runs-on: ubuntu-latest
+
+       defaults:
+         run:
+           working-directory: ${{ env.WORKING_DIR }}
+
+       steps:
+         - name: Checkout
+           uses: actions/checkout@v4
+
+         - name: Configure AWS credentials
+           uses: aws-actions/configure-aws-credentials@v4
+           with:
+             aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+             aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+             aws-region: ${{ secrets.AWS_REGION }}
+
+         - name: Setup Terraform
+           uses: hashicorp/setup-terraform@v3
+           with:
+             terraform_version: ${{ env.TF_VERSION }}
+
+         - name: Terraform Init
+           run: terraform init
+
+         - name: Terraform Validate
+           run: terraform validate
+
+         - name: Terraform Plan
+           if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
+           run: terraform plan -out=tfplan
+
+         - name: Terraform Apply
+           if: github.event.inputs.action == 'apply'
+           run: terraform apply -auto-approve tfplan
+
+         - name: Terraform Destroy
+           if: github.event.inputs.action == 'destroy'
+           run: terraform destroy -auto-approve
+   ```
+
+   **How to trigger**:
+   1. Go to **Actions** tab in GitHub
+   2. Select **Terraform — FL Infrastructure**
+   3. Click **Run workflow**, choose `plan` / `apply` / `destroy`
+   4. Click **Run workflow**
+
 **Deliverables**:
-- ✅ AWS account ready with IAM user
-- ✅ AWS CLI configured
-- ✅ S3 buckets created
-- ✅ Budget alerts set
-- ✅ Terraform backend ready
+- ✅ GitHub Actions secrets verified
+- ✅ Terraform remote state bucket and lock table bootstrapped (one-time)
+- ✅ CI/CD pipeline in place (manual trigger)
 
 ---
 
@@ -234,9 +286,12 @@
 ### 1.3 Terraform Configuration
 **Time**: 8 hours
 
-**Steps**:
+All Terraform files live under `terraform/`. The CI/CD pipeline (section 1.2) runs `init → validate → plan → apply`; no manual `terraform apply` is needed.
 
-1. **Backend Configuration** (`terraform/backend.tf`)
+**Files**:
+
+1. **`terraform/main.tf`** — provider + S3 backend
+
    ```hcl
    terraform {
      backend "s3" {
@@ -245,9 +300,9 @@
        region         = "us-east-1"
        dynamodb_table = "fl-demo-terraform-locks"
        encrypt        = true
-       profile        = "fl-demo"
+       # No profile — credentials come from GitHub Actions env vars
      }
-     
+
      required_providers {
        aws = {
          source  = "hashicorp/aws"
@@ -259,83 +314,137 @@
        }
      }
    }
+
+   provider "aws" {
+     region = var.aws_region
+   }
    ```
 
-2. **VPC Setup** (`terraform/vpc.tf`)
-   - CIDR: 10.0.0.0/16
-   - 3 Availability Zones
-   - Public subnets: 10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24
-   - Private subnets: 10.0.11.0/24, 10.0.12.0/24, 10.0.13.0/24
-   - NAT Gateway (one per AZ for HA, or just one for dev)
-   - Internet Gateway
-   - Route tables configured
-   - VPC endpoints for S3, ECR (optional, saves NAT costs)
+2. **`terraform/variables.tf`** — input variables
 
-3. **EKS Cluster** (`terraform/eks.tf`)
-   - Cluster name: `fl-demo-cluster`
-   - Kubernetes version: 1.28
-   - Node groups:
-     - **system**: t3.medium (2 nodes, min=2, max=5)
-     - **training**: c5.2xlarge (3 nodes, min=3, max=10)
-   - Add-ons: vpc-cni, coredns, kube-proxy, aws-ebs-csi-driver
-   - IAM OIDC provider for service accounts
-   - Cluster autoscaler IAM role
-
-4. **Security Groups** (`terraform/security_groups.tf`)
-   - **eks-cluster-sg**: Control plane security
-   - **eks-node-sg**: Worker node security
-   - **alb-sg**: Load balancer security
-   - Rules:
-     - Cluster → Nodes: 443, 10250
-     - Nodes → Nodes: All traffic within VPC
-     - Nodes → Internet: 443 (HTTPS)
-     - ALB → Nodes: 80, 8080
-
-5. **IAM Roles** (`terraform/iam.tf`)
-   - EKS cluster role
-   - Node group role (EC2, ECR, S3, CloudWatch permissions)
-   - Service account role for pods (S3 access)
-   - ALB controller role
-
-6. **Apply Infrastructure**
-   ```bash
-   cd terraform
-   
-   # Initialize
-   terraform init
-   
-   # Plan (review changes)
-   terraform plan -out=tfplan
-   
-   # Apply (takes 15-20 minutes)
-   terraform apply tfplan
-   
-   # Save outputs
-   terraform output eks_cluster_endpoint
-   terraform output eks_cluster_name
+   ```hcl
+   variable "aws_region"   { default = "us-east-1" }
+   variable "cluster_name" { default = "fl-demo-cluster" }
+   variable "vpc_cidr"     { default = "10.0.0.0/16" }
    ```
 
-7. **Configure kubectl**
-   ```bash
-   # Update kubeconfig
-   aws eks update-kubeconfig \
-     --region us-east-1 \
-     --name fl-demo-cluster \
-     --profile fl-demo
-   
-   # Verify connection
-   kubectl get nodes
-   kubectl get pods --all-namespaces
+3. **`terraform/vpc.tf`** — VPC, subnets, NAT gateway
+
+   ```hcl
+   module "vpc" {
+     source  = "terraform-aws-modules/vpc/aws"
+     version = "~> 5.0"
+
+     name = "${var.cluster_name}-vpc"
+     cidr = var.vpc_cidr
+
+     azs             = ["${var.aws_region}a", "${var.aws_region}b", "${var.aws_region}c"]
+     public_subnets  = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+     private_subnets = ["10.0.11.0/24", "10.0.12.0/24", "10.0.13.0/24"]
+
+     enable_nat_gateway   = true
+     single_nat_gateway   = true   # dev: one NAT; set false for HA prod
+     enable_dns_hostnames = true
+
+     # Required tags for EKS subnet discovery
+     public_subnet_tags  = { "kubernetes.io/role/elb"                    = "1" }
+     private_subnet_tags = { "kubernetes.io/role/internal-elb"           = "1",
+                             "kubernetes.io/cluster/${var.cluster_name}" = "owned" }
+   }
    ```
+
+4. **`terraform/eks.tf`** — EKS cluster + managed node groups
+
+   ```hcl
+   module "eks" {
+     source  = "terraform-aws-modules/eks/aws"
+     version = "~> 20.0"
+
+     cluster_name    = var.cluster_name
+     cluster_version = "1.29"
+
+     cluster_endpoint_public_access = true
+
+     vpc_id     = module.vpc.vpc_id
+     subnet_ids = module.vpc.private_subnets
+
+     eks_managed_node_groups = {
+       system = {
+         instance_types = ["t3.medium"]
+         min_size       = 2
+         max_size       = 5
+         desired_size   = 2
+       }
+       training = {
+         instance_types = ["c5.2xlarge"]
+         min_size       = 3
+         max_size       = 10
+         desired_size   = 3
+       }
+     }
+
+     # Enable IRSA so pods can assume IAM roles via service accounts
+     enable_irsa = true
+   }
+
+   output "eks_cluster_name"     { value = module.eks.cluster_name }
+   output "eks_cluster_endpoint" { value = module.eks.cluster_endpoint }
+   ```
+
+5. **`terraform/s3.tf`** — data + model buckets
+
+   ```hcl
+   locals {
+     hospital_buckets = ["hospital-1", "hospital-2", "hospital-3"]
+   }
+
+   resource "aws_s3_bucket" "hospital_data" {
+     for_each = toset(local.hospital_buckets)
+     bucket   = "fl-demo-data-${each.key}"
+   }
+
+   resource "aws_s3_bucket_versioning" "hospital_data" {
+     for_each = aws_s3_bucket.hospital_data
+     bucket   = each.value.id
+     versioning_configuration { status = "Enabled" }
+   }
+
+   resource "aws_s3_bucket" "models" {
+     bucket = "fl-demo-models"
+   }
+
+   resource "aws_s3_bucket_versioning" "models" {
+     bucket = aws_s3_bucket.models.id
+     versioning_configuration { status = "Enabled" }
+   }
+
+   resource "aws_s3_bucket" "mlflow" {
+     bucket = "fl-demo-mlflow"
+   }
+   ```
+
+**How to apply via CI**:
+1. Push / merge the Terraform files to the main branch
+2. Go to **Actions → Terraform — FL Infrastructure → Run workflow**
+3. Select `plan` first; review the output in the job log
+4. Re-run with `apply` to provision
+
+**Configure kubectl after apply**:
+```bash
+aws eks update-kubeconfig \
+  --region us-east-1 \
+  --name fl-demo-cluster
+kubectl get nodes
+```
 
 **Deliverables**:
-- ✅ VPC with public/private subnets
-- ✅ EKS cluster running
-- ✅ Node groups autoscaling
-- ✅ kubectl configured
-- ✅ IAM roles created
+- ✅ VPC with public/private subnets across 3 AZs
+- ✅ EKS cluster with system + training node groups
+- ✅ S3 buckets for hospital data, models, MLflow
+- ✅ All infrastructure managed via GitHub Actions CI/CD
+- ✅ IRSA enabled for pod-level S3 access
 
-**Estimated Cost**: ~$150/month (can reduce with spot instances)
+**Estimated Cost**: ~$150/month (reduce with Spot instances on training node group)
 
 ---
 

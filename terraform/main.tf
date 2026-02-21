@@ -5,7 +5,8 @@ terraform {
     region         = "us-east-1"
     dynamodb_table = "fl-demo-terraform-locks"
     encrypt        = true
-    profile        = "fl-demo"
+    # No profile — credentials come from GitHub Actions secrets
+    # (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars)
   }
 
   required_providers {
@@ -21,6 +22,5 @@ terraform {
 }
 
 provider "aws" {
-  region  = var.aws_region
-  profile = var.aws_profile
+  region = var.aws_region
 }
