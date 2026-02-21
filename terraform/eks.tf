@@ -24,7 +24,7 @@ module "eks" {
     system = {
       instance_types = ["t3.medium"]
       min_size       = 1
-      max_size       = 3
+      max_size       = 2
       desired_size   = 2
 
       labels = { role = "system" }
@@ -33,8 +33,8 @@ module "eks" {
     training = {
       instance_types = ["t3.medium"]
       min_size       = 1
-      max_size       = 4
-      desired_size   = 3
+      max_size       = 2
+      desired_size   = 2
 
       labels = { role = "training" }
     }

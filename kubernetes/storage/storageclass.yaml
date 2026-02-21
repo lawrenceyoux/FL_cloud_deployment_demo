@@ -1,0 +1,21 @@
+# kubernetes/storage/storageclass.yaml
+# gp3 StorageClass backed by the AWS EBS CSI driver.
+#
+# The EBS CSI driver addon must be installed first (done in k8s-setup.yml).
+#
+# WaitForFirstConsumer — delays PV binding until a pod is scheduled so the
+# volume is always created in the same AZ as the node.  This prevents the
+# common "volume and node are in different AZs" scheduling failure.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer   # avoids AZ mismatch
+reclaimPolicy: Delete                     # volumes are deleted when PVC is deleted
+allowVolumeExpansion: true
