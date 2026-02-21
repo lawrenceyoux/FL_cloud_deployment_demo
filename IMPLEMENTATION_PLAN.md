@@ -434,124 +434,77 @@ kubectl get nodes
 ## Day 5: Kubernetes Setup & Add-ons
 
 ### 1.4 Kubernetes Configuration
-**Time**: 6 hours
+**Time**: 2 hours
 
-**Steps**:
+All cluster setup is handled by a second **manually-triggered** GitHub Actions workflow: `.github/workflows/k8s-setup.yml`. Run it once after the Terraform `apply` completes. All steps use `kubectl apply` or `helm upgrade --install`, so re-running is safe.
 
-1. **Create Namespaces**
-   ```yaml
-   # kubernetes/namespaces/fl-namespace.yaml
-   apiVersion: v1
-   kind: Namespace
-   metadata:
-     name: federated-learning
-     labels:
-       name: federated-learning
-   ---
-   apiVersion: v1
-   kind: Namespace
-   metadata:
-     name: mlops
-     labels:
-       name: mlops
-   ```
-   
-   ```bash
-   kubectl apply -f kubernetes/namespaces/
-   ```
+> **Sandbox note**: Prometheus + Grafana (`kube-prometheus-stack`) is skipped — it requires ~4 GB RAM across the stack, which exceeds what `t3.medium` (4 GB total) nodes can provide. MLflow (deployed separately in Phase 2) covers experiment tracking for this demo.
 
-2. **Install AWS Load Balancer Controller**
-   ```bash
-   # Add Helm repo
-   helm repo add eks https://aws.github.io/eks-charts
-   helm repo update
-   
-   # Install controller
-   helm install aws-load-balancer-controller \
-     eks/aws-load-balancer-controller \
-     -n kube-system \
-     --set clusterName=fl-demo-cluster \
-     --set serviceAccount.create=true \
-     --set serviceAccount.name=aws-load-balancer-controller
-   
-   # Verify
-   kubectl get deployment -n kube-system aws-load-balancer-controller
-   ```
+**How to trigger**:
+1. Go to **Actions → K8s — Cluster Setup & Add-ons → Run workflow**
+2. Leave `skip_addons` as `false` (default) to install everything
+3. Click **Run workflow**
 
-3. **Install Metrics Server** (for auto-scaling)
-   ```bash
-   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-   
-   # Verify
-   kubectl top nodes
-   ```
+**What the workflow applies**:
 
-4. **Install Cluster Autoscaler**
-   ```bash
-   # Download manifest
-   curl -o cluster-autoscaler-autodiscover.yaml \
-     https://raw.githubusercontent.com/kubernetes/autoscaler/master/cluster-autoscaler/cloudprovider/aws/examples/cluster-autoscaler-autodiscover.yaml
-   
-   # Edit: Set cluster name
-   sed -i 's/<YOUR CLUSTER NAME>/fl-demo-cluster/g' cluster-autoscaler-autodiscover.yaml
-   
-   # Apply
-   kubectl apply -f cluster-autoscaler-autodiscover.yaml
-   ```
+| Step | What it does | Source |
+|------|-------------|--------|
+| Apply namespaces | Creates `federated-learning` + `mlops` namespaces | `kubernetes/namespaces/fl-namespace.yaml` |
+| Apply ConfigMaps | FL training config (rounds, server address, S3 bucket) | `kubernetes/configmaps/fl-config.yaml` |
+| Metrics Server | Enables `kubectl top nodes/pods` and HPA | Upstream release manifest |
+| Cluster Autoscaler | Scales node groups within Terraform min/max bounds | `autoscaler/cluster-autoscaler` Helm chart |
+| AWS LB Controller | Provisions ALB for any LoadBalancer-type Services | `eks/aws-load-balancer-controller` Helm chart |
 
-5. **Install Prometheus + Grafana** (Monitoring)
-   ```bash
-   # Add Helm repos
-   helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-   helm repo update
-   
-   # Install kube-prometheus-stack
-   helm install prometheus prometheus-community/kube-prometheus-stack \
-     -n mlops \
-     --set prometheus.prometheusSpec.retention=7d \
-     --set grafana.adminPassword=admin123
-   
-   # Get Grafana URL
-   kubectl port-forward -n mlops svc/prometheus-grafana 3000:80
-   # Access: http://localhost:3000 (admin/admin123)
-   ```
+**Kubernetes manifests** (already in repo, no edits needed):
 
-6. **Create ConfigMaps for Configuration**
-   ```yaml
-   # kubernetes/configmaps/fl-config.yaml
-   apiVersion: v1
-   kind: ConfigMap
-   metadata:
-     name: fl-config
-     namespace: federated-learning
-   data:
-     NUM_ROUNDS: "50"
-     MIN_CLIENTS: "3"
-     SERVER_ADDRESS: "fl-server:8080"
-     MLFLOW_TRACKING_URI: "http://mlflow-server.mlops:5000"
-     AWS_REGION: "us-east-1"
-     S3_MODEL_BUCKET: "fl-demo-models"
-   ```
-   
-   ```bash
-   kubectl apply -f kubernetes/configmaps/
-   ```
+`kubernetes/namespaces/fl-namespace.yaml`:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: federated-learning
+  labels:
+    name: federated-learning
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mlops
+  labels:
+    name: mlops
+```
 
-7. **Create Secrets** (for AWS credentials, if needed)
-   ```bash
-   kubectl create secret generic aws-credentials \
-     -n federated-learning \
-     --from-literal=AWS_ACCESS_KEY_ID=<key> \
-     --from-literal=AWS_SECRET_ACCESS_KEY=<secret>
-   ```
+`kubernetes/configmaps/fl-config.yaml`:
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fl-config
+  namespace: federated-learning
+data:
+  NUM_ROUNDS: "50"
+  MIN_CLIENTS: "3"
+  SERVER_ADDRESS: "fl-server:8080"
+  MLFLOW_TRACKING_URI: "http://mlflow-server.mlops:5000"
+  AWS_REGION: "us-east-1"
+  S3_MODEL_BUCKET: "fl-demo-models"
+```
+
+**Verify after the workflow completes**:
+```bash
+aws eks update-kubeconfig --region us-east-1 --name fl-demo-cluster
+kubectl get namespaces
+kubectl get configmaps -n federated-learning
+kubectl get deployments -n kube-system   # metrics-server, aws-load-balancer-controller
+kubectl top nodes
+```
 
 **Deliverables**:
-- ✅ Namespaces created
-- ✅ Load balancer controller installed
-- ✅ Metrics server running
-- ✅ Cluster autoscaler configured
-- ✅ Prometheus + Grafana monitoring
-- ✅ ConfigMaps and Secrets created
+- ✅ Namespaces created (`federated-learning`, `mlops`)
+- ✅ FL ConfigMap applied
+- ✅ Metrics Server running
+- ✅ Cluster Autoscaler configured
+- ✅ AWS Load Balancer Controller installed
 
 ---
 

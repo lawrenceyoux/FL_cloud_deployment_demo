@@ -1,0 +1,100 @@
+name: K8s — Cluster Setup & Add-ons
+
+# Manually triggered. Run this ONCE after "Terraform — FL Infrastructure" apply succeeds.
+# Re-running is safe — all steps are idempotent (kubectl apply, helm upgrade --install).
+on:
+  workflow_dispatch:
+    inputs:
+      skip_addons:
+        description: "Skip Helm add-ons (namespaces + configmaps only)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+env:
+  CLUSTER_NAME: fl-demo-cluster
+
+jobs:
+  k8s-setup:
+    name: "Configure EKS cluster"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region "${{ secrets.AWS_REGION }}" \
+            --name "$CLUSTER_NAME"
+          kubectl get nodes   # quick sanity check
+
+      # ── Namespaces ────────────────────────────────────────────────────────
+      - name: Apply namespaces
+        run: kubectl apply -f kubernetes/namespaces/
+
+      # ── ConfigMaps ────────────────────────────────────────────────────────
+      - name: Apply ConfigMaps
+        run: kubectl apply -f kubernetes/configmaps/
+
+      # ── Metrics Server ────────────────────────────────────────────────────
+      # Lightweight; required for kubectl top nodes/pods and HPA.
+      - name: Install Metrics Server
+        if: github.event.inputs.skip_addons == 'false'
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          kubectl rollout status deployment/metrics-server -n kube-system --timeout=120s
+
+      # ── Cluster Autoscaler ────────────────────────────────────────────────
+      # Scales node groups within the min/max bounds declared in Terraform.
+      - name: Install Cluster Autoscaler
+        if: github.event.inputs.skip_addons == 'false'
+        run: |
+          helm repo add autoscaler https://kubernetes.github.io/autoscaler
+          helm repo update
+          helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
+            --namespace kube-system \
+            --set autoDiscovery.clusterName="$CLUSTER_NAME" \
+            --set awsRegion="${{ secrets.AWS_REGION }}" \
+            --set rbac.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"="" \
+            --wait --timeout 120s
+
+      # ── AWS Load Balancer Controller ──────────────────────────────────────
+      # Required to expose services via AWS ALB Ingress.
+      - name: Install AWS Load Balancer Controller
+        if: github.event.inputs.skip_addons == 'false'
+        run: |
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+          helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            --namespace kube-system \
+            --set clusterName="$CLUSTER_NAME" \
+            --set serviceAccount.create=true \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --wait --timeout 120s
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Show cluster state
+        run: |
+          echo "=== Nodes ==="
+          kubectl get nodes
+          echo "=== Namespaces ==="
+          kubectl get namespaces
+          echo "=== ConfigMaps (federated-learning) ==="
+          kubectl get configmaps -n federated-learning
+          echo "=== kube-system deployments ==="
+          kubectl get deployments -n kube-system
