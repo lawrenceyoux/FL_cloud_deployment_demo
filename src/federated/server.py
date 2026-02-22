@@ -200,18 +200,33 @@ def main() -> None:
         )
 
         # ── Log per-round metrics to MLflow ──────────────────────────
-        for rnd, metrics_list in history.metrics_distributed.items():
-            round_metrics = {}
-            for key, value_list in metrics_list:
-                round_metrics[f"distributed_{key}"] = value_list
-            if round_metrics:
-                mlflow.log_metrics(round_metrics, step=rnd)
+        # Flower returns metrics_distributed as:
+        #   {metric_name: [(round_int, value), ...], ...}
+        # Pivot to {round_int: {metric_name: value}} for MLflow step logging.
+        metrics_by_round: Dict[int, Dict[str, float]] = {}
+        for metric_name, round_values in history.metrics_distributed.items():
+            for rnd, value in round_values:
+                if rnd not in metrics_by_round:
+                    metrics_by_round[rnd] = {}
+                metrics_by_round[rnd][f"distributed_{metric_name}"] = float(value)
+
+        for rnd in sorted(metrics_by_round):
+            mlflow.log_metrics(metrics_by_round[rnd], step=rnd)
 
         # ── Print final round summary ────────────────────────────────
+        # metrics_distributed_fit has the same {metric_name: [(round, value)]} shape.
         if history.metrics_distributed_fit:
-            last_round   = max(history.metrics_distributed_fit.keys())
-            final_metric = history.metrics_distributed_fit[last_round]
-            print(f"Final round {last_round} metrics: {final_metric}")
+            last_round = max(
+                rnd
+                for vals in history.metrics_distributed_fit.values()
+                for rnd, _ in vals
+            )
+            final_metric = {
+                k: dict(vals).get(last_round)
+                for k, vals in history.metrics_distributed_fit.items()
+                if dict(vals).get(last_round) is not None
+            }
+            print(f"Final round {last_round} fit metrics: {final_metric}")
 
         # ── Upload final global model to S3 ─────────────────────────
         if strategy.final_params is not None:
