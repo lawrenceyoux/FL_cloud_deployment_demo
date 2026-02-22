@@ -9,7 +9,12 @@
 
 ## Project Overview
 
+A end-to-end, production-grade Federated Learning platform deployed on AWS EKS. It demonstrates privacy-preserving machine learning across three simulated hospitals — each hospital trains a neural network locally, and only encrypted model weights are ever transmitted. Raw patient data never leaves the hospital pod. The entire platform, from infrastructure provisioning to model training to results, is fully automated through GitHub Actions CI/CD with zero manual steps beyond clicking "Run workflow".
+
+
 This project demonstrates **federated learning (FL)** applied to stroke prediction, using a real-world tabular healthcare dataset split across three simulated hospitals. No raw patient data ever leaves a hospital — only model weight updates are exchanged and aggregated on the central server.
+
+
 
 **What it shows:**
 
@@ -21,7 +26,7 @@ This project demonstrates **federated learning (FL)** applied to stroke predicti
 
 ### Use Case
 
-**Problem**: Three hospitals want to collaboratively train a stroke-risk classifier but cannot share patient records due to privacy regulations.
+**Problem**: In real healthcare, hospitals cannot share patient data due to HIPAA/GDPR regulations. Federated Learning solves this - each hospital trains on its own data, sends only weight updates to a central aggregator, and the global model improves without any raw data ever moving. This project operationalises that concept on real cloud infrastructure, showing it can be done reliably, repeatably, and observably.
 
 **Solution**:
 1. Each hospital trains a local copy of the model on its own data
@@ -53,6 +58,23 @@ This project demonstrates **federated learning (FL)** applied to stroke predicti
 | Flower | Handles server/client communication in multi-terminal mode |
 | MLflow | Logs per-hospital and averaged metrics every round |
 | Terraform + Kubernetes | IaC scaffolding for EKS cloud deployment |
+
+---
+
+## Technology Stack
+
+| Layer                  | Technology        | Detail                                                                 |
+|------------------------|-----------------|------------------------------------------------------------------------|
+| ML Model               | PyTorch          | StrokeNet — embedding-based classifier for tabular patient data        |
+| FL Framework           | Flower (flwr)    | gRPC-based weight exchange, FedAvg & FedProx strategies                 |
+| Experiment Tracking    | MLflow           | Deployed in-cluster, per-round step metrics, model registry             |
+| Orchestration          | Kubernetes (EKS) | Jobs, Services, ConfigMaps, Secrets, RBAC, namespaces                  |
+| Cloud Infrastructure   | AWS              | EKS, ECR, S3, VPC, IAM                                                |
+| IaC                    | Terraform        | Fully declarative cluster + networking + storage                       |
+| CI/CD                  | GitHub Actions   | 4 workflows, secrets management, cross-job outputs                     |
+| Container Registry     | AWS ECR          | Image built + pushed per commit SHA                                     |
+| Data Pipeline          | Python scripts   | Preprocessing, validation, per-hospital splits                         |
+
 
 ---
 
@@ -219,18 +241,6 @@ terraform apply -auto-approve
 
 Kubernetes manifests in `kubernetes/` define the FL server and client deployments, services, namespace, and ConfigMaps.
 
----
-
-## Technology Stack
-
-| Layer | Technology |
-|-------|-----------|
-| FL Framework | Flower 1.5+ |
-| Deep Learning | PyTorch 2.0+ |
-| Data | Pandas, scikit-learn |
-| MLOps | MLflow |
-| IaC | Terraform (EKS) |
-| Orchestration | Kubernetes |
 
 ---
 
