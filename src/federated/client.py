@@ -86,7 +86,7 @@ class HospitalClient(fl.client.NumPyClient):
                 loss.backward()
                 self.optimizer.step()
 
-        print(f"[Hospital {self.id}] Local training complete ({local_epochs} epochs)")
+        print(f"[Hospital #{self.id}] Local training complete ({local_epochs} epochs)")
         return get_parameters(self.model), len(self.train_loader.dataset), {}
 
     # ------------------------------------------------------------------
@@ -110,8 +110,8 @@ class HospitalClient(fl.client.NumPyClient):
             )
 
         print(
-            f"[Hospital {self.id}] "
-            f"Acc={metrics['accuracy']:.3f}  "
+            f"[Hospital #{self.id}] "
+            f"Acc={metrics['accuracy']:.1%}  "
             f"F1={metrics['f1']:.3f}  "
             f"AUC={metrics['auc_roc']:.3f}"
         )
@@ -132,7 +132,7 @@ def main() -> None:
         mlflow.set_experiment("federated-stroke-prediction")
 
     client = HospitalClient(HOSPITAL_ID)
-    print(f"[Hospital {HOSPITAL_ID}] Connecting to FL server at {SERVER_ADDRESS}")
+    print(f"[Hospital #{HOSPITAL_ID}] Connecting to FL server at {SERVER_ADDRESS}")
     fl.client.start_numpy_client(server_address=SERVER_ADDRESS, client=client)
 
 
