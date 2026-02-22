@@ -126,7 +126,7 @@ def make_strategy(name: str) -> _CaptureFinalParams:
 def _upload_global_model_to_s3(
     params_ndarrays: List[np.ndarray],
     run_name: str,
-    input_dim: int,
+    input_dim: int,  # kept for API compat but derived from params when possible
 ) -> None:
     """Upload the final global model weights to S3.
 
@@ -146,7 +146,16 @@ def _upload_global_model_to_s3(
         from src.models.stroke_classifier import StrokeNet
         from src.models.stroke_classifier import set_parameters as sp
 
-        model = StrokeNet(input_dim)
+        # Derive actual input_dim from the aggregated weights.
+        # params_ndarrays[0] is the first linear layer weight: shape [hidden, input_dim]
+        actual_input_dim = int(params_ndarrays[0].shape[1])
+        if actual_input_dim != input_dim:
+            print(
+                f"[server] INPUT_DIM env var={input_dim} but actual feature dim "
+                f"from params={actual_input_dim} — using {actual_input_dim}"
+            )
+
+        model = StrokeNet(actual_input_dim)
         sp(model, params_ndarrays)
 
         region = os.environ.get("AWS_REGION", "us-east-1")
