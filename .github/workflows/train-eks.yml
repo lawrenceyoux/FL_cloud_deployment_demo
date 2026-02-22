@@ -281,33 +281,101 @@ jobs:
           echo "───────────────────────────────────────────────────────────────"
 
           echo "${RENDERED}" | kubectl apply -f -
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ kubectl apply failed with exit code $EXIT_CODE"
+            echo "   Check the rendered manifest above for syntax errors."
+            exit 1
+          fi
           echo ""
-          echo "Job submitted: train-baseline-${RUN_ID}"
-          echo "Watching pod come up…"
-          kubectl wait --for=condition=ready pod \
-            -l "run-id=${RUN_ID}" \
-            -n "$NAMESPACE" \
-            --timeout=120s || true   # pod may finish before "ready" — that's fine
+          echo "✅ Job resource submitted: train-baseline-${RUN_ID}"
+
+      - name: Verify Job was created
+        run: |
+          echo "═══ Checking if Job resource exists ══════════════════════════"
+          kubectl get job "train-baseline-${RUN_ID}" -n "$NAMESPACE" -o yaml || {
+            echo "❌ Job resource not found in cluster — apply may have silently failed"
+            exit 1
+          }
+          echo ""
+          echo "═══ Job conditions ════════════════════════════════════════════"
+          kubectl get job "train-baseline-${RUN_ID}" -n "$NAMESPACE" -o jsonpath='{.status.conditions}' | jq '.' 2>/dev/null || echo "(no conditions yet)"
+          echo ""
 
       - name: Stream training logs
         run: |
-          echo "═══ Training logs (streaming) ═══════════════════════════════"
+          echo "═══ Waiting for pod to appear ════════════════════════════════"
+          # Wait up to 3 min for at least one pod to be created
+          for i in $(seq 1 18); do
+            POD_COUNT=$(kubectl get pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
+            if [ "$POD_COUNT" -gt 0 ]; then
+              echo "✅ Pod(s) found after $((i * 10))s"
+              break
+            fi
+            echo "  ⏳ No pods yet… (${i}/18, waiting 10s)"
+            sleep 10
+          done
+
+          # If still zero pods after 3 minutes, dump diagnostics
+          POD_COUNT=$(kubectl get pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
+          if [ "$POD_COUNT" -eq 0 ]; then
+            echo ""
+            echo "❌❌❌ NO PODS CREATED AFTER 3 MINUTES ❌❌❌"
+            echo ""
+            echo "═══ Job describe (why no pods?) ═══════════════════════════════"
+            kubectl describe job "train-baseline-${RUN_ID}" -n "$NAMESPACE" || true
+            echo ""
+            echo "═══ Recent events in namespace $NAMESPACE ═════════════════════"
+            kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' | tail -30 || true
+            echo ""
+            echo "═══ Check ServiceAccount / RBAC ═══════════════════════════════"
+            kubectl get serviceaccount -n "$NAMESPACE" || true
+            echo ""
+            echo "═══ Node status (schedulable?) ════════════════════════════════"
+            kubectl get nodes -o wide || true
+            echo ""
+            echo "Possible causes:"
+            echo "  • Image pull secret missing → add imagePullSecrets to Job spec"
+            echo "  • ServiceAccount doesn't exist → create 'fl-trainer' SA"
+            echo "  • No schedulable nodes → check EKS node group"
+            echo "  • Resource limits too high → reduce memory/CPU requests"
+            echo "══════════════════════════════════════════════════════════════"
+            exit 1
+          fi
+
+          echo ""
+          echo "═══ Pod list ═════════════════════════════════════════════════"
+          kubectl get pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" -o wide || true
+
+          echo ""
+          echo "═══ Pod describe (events / image pull errors) ════════════════"
+          kubectl describe pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" || true
+
+          echo ""
+          echo "═══ Training logs (streaming) ════════════════════════════════"
           kubectl logs \
             --selector="run-id=${RUN_ID}" \
             --namespace="$NAMESPACE" \
             --follow \
-            --pod-running-timeout=120s \
+            --pod-running-timeout=180s \
           || true
-          echo "═══ End of streamed logs ════════════════════════════════════"
+          echo "═══ End of streamed logs ═════════════════════════════════════"
 
       - name: Wait for Job completion and check exit code
         run: |
-          echo "Waiting for Job to complete (timeout: 60 min)…"
+          echo "Waiting for Job to complete or fail (timeout: 60 min)…"
+          # Wait for complete OR failed so the step doesn't hang on a crashed pod
           kubectl wait \
             --for=condition=complete \
             --timeout=3600s \
             job/"train-baseline-${RUN_ID}" \
-            -n "$NAMESPACE"
+            -n "$NAMESPACE" \
+          || kubectl wait \
+            --for=condition=failed \
+            --timeout=10s \
+            job/"train-baseline-${RUN_ID}" \
+            -n "$NAMESPACE" \
+          && { echo "❌ Job failed — see logs above"; exit 1; }
           echo "✅ Job completed successfully"
 
       - name: Show final job status
