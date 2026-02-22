@@ -47,9 +47,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
 COPY src/ ./src/
 COPY setup.py ./
 
-# Install the package so `src.*` imports resolve regardless of cwd or PYTHONPATH.
-# This is belt-and-suspenders alongside PYTHONPATH=/app above.
-RUN pip install --no-cache-dir -e .
+# Belt-and-suspenders: write a .pth file so Python always finds /app on
+# sys.path regardless of PYTHONPATH, editable installs, or entrypoint quirks.
+# This is the most reliable way to ensure `from src.xxx import` always works.
+RUN python -c "import site; open(site.getsitepackages()[0]+'/fl_app.pth','w').write('/app\n')" && \
+    pip install --no-cache-dir -e . && \
+    python -c "from src.models.stroke_classifier import StrokeNet; print('✅ src.models import OK')"
 
 # ── Processed hospital data ──────────────────────────────────────────────────
 # Bake the pre-processed CSVs into the image so the training job works

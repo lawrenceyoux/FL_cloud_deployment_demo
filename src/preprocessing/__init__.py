@@ -1,4 +1,4 @@
-from src.preprocessing.pipeline import (
+from .pipeline import (
     preprocess,
     non_iid_split,
     load_raw,
