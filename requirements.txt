@@ -13,7 +13,9 @@ numpy
 pyarrow       # for parquet support
 
 # MLflow — skinny client only (no Flask/gunicorn/server UI deps)
-mlflow-skinny
+# Pin to same version as the server image (kubernetes/deployments/mlflow.yaml)
+# ghcr.io/mlflow/mlflow:v2.22.0 — must stay in sync to avoid API mismatches.
+mlflow-skinny==2.22.0
 
 # AWS — SDK only; awscli not needed at runtime
 boto3

@@ -175,7 +175,8 @@ def run_training(
         final_metrics, conf = evaluate_model(model, val_loader, device=device)
         mlflow.log_metrics({f"final_{k}": v for k, v in final_metrics.items()})
         mlflow.log_text(str(conf), "confusion_matrix.txt")
-        mlflow.pytorch.log_model(model, "model")
+        # artifact_path= is the MLflow 2.x API; compatible with server v2.22.0
+        mlflow.pytorch.log_model(model, artifact_path="model")
         # Optionally push the state-dict to S3 for downstream FL initialisation
         _maybe_upload_to_s3(model, run_name)
 
