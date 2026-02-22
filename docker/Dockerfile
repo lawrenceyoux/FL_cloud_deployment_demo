@@ -46,28 +46,15 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # ── Source code ──────────────────────────────────────────────────────────────
 COPY src/ ./src/
 
-# Verify the copy worked and sys.path is correct, then write the .pth file.
-# Using printf to avoid shell quoting issues with echo.
-# Smoke-test only checks the path — does NOT import torch to keep build fast.
+# Write /app to the .pth file and smoke-test that src.models is discoverable.
+# The Python check is written to a file first to avoid Dockerfile parser
+# misinterpreting Python keywords (import, etc.) as Dockerfile instructions.
 RUN printf '/app\n' > /usr/local/lib/python3.11/site-packages/fl_app.pth && \
-    echo "--- site-packages fl_app.pth ---" && \
-    cat /usr/local/lib/python3.11/site-packages/fl_app.pth && \
-    echo "--- /app/src contents ---" && \
-    ls /app/src/ && \
-    echo "--- /app/src/models contents ---" && \
-    ls /app/src/models/ && \
-    echo "--- sys.path ---" && \
-    python -c "import sys; print(sys.path)" && \
-    echo "--- smoke test: can Python find src.models? ---" && \
-    python -c "
-import sys, importlib.util
-spec = importlib.util.find_spec('src')
-print('src spec:', spec)
-spec2 = importlib.util.find_spec('src.models')
-print('src.models spec:', spec2)
-assert spec2 is not None, 'FAIL: src.models not found — check COPY and PYTHONPATH'
-print('✅ src.models found OK')
-"
+    echo "sys.path:" && python -c "import sys; print(sys.path)" && \
+    echo "src/ contents:" && ls /app/src/ && \
+    echo "src/models/ contents:" && ls /app/src/models/ && \
+    printf 'import importlib.util\nspec = importlib.util.find_spec("src.models")\nassert spec is not None, "FAIL: src.models not on sys.path"\nprint("OK: src.models found at", spec.origin)\n' > /tmp/check.py && \
+    python /tmp/check.py
 
 # ── Processed hospital data ──────────────────────────────────────────────────
 # Bake the pre-processed CSVs into the image so the training job works
