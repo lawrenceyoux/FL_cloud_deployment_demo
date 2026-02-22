@@ -59,11 +59,12 @@ def weighted_average(metrics: List[Tuple[int, Dict]]) -> Dict:
     """Weighted average of client metrics by number of evaluation samples.
 
     Mirrors local_dev/simulate.py::fedavg logic.
+    Also surfaces total sample count as ``n_samples`` in the returned dict.
     """
     total = sum(n for n, _ in metrics)
     if total == 0:
         return {}
-    agg: Dict[str, float] = {}
+    agg: Dict[str, float] = {"n_samples": float(total)}
     for n, m in metrics:
         w = n / total
         for k, v in m.items():
@@ -88,15 +89,37 @@ def _sparkbar(value: float, lo: float, hi: float, width: int = 30) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def _print_round_summary(rnd: int, num_rounds: int, eval_metrics: Dict[str, float]) -> None:
-    """Print a compact one-line summary after each evaluation round."""
-    acc  = eval_metrics.get("accuracy",  float("nan"))
-    auc  = eval_metrics.get("auc_roc",   float("nan"))
-    f1   = eval_metrics.get("f1",         float("nan"))
-    bar  = _sparkbar(auc, 0.5, 1.0, width=20)
+def _print_round_summary(
+    rnd: int,
+    num_rounds: int,
+    eval_metrics: Dict[str, float],
+    fit_metrics: Optional[Dict[str, float]] = None,
+) -> None:
+    """Print a compact per-round summary line after each evaluation round."""
+    acc        = eval_metrics.get("accuracy",  float("nan"))
+    auc_roc    = eval_metrics.get("auc_roc",   float("nan"))
+    auc_pr     = eval_metrics.get("auc_pr",    float("nan"))
+    f1         = eval_metrics.get("f1",        float("nan"))
+    prec       = eval_metrics.get("precision", float("nan"))
+    rec        = eval_metrics.get("recall",    float("nan"))
+    n_samples  = eval_metrics.get("n_samples", float("nan"))
+    train_loss = (fit_metrics or {}).get("train_loss", float("nan"))
+
+    bar      = _sparkbar(auc_roc, 0.5, 1.0, width=20)
+    tl_s     = f"{train_loss:.4f}" if train_loss == train_loss else "  n/a "
+    pr_s     = f"{prec:.3f}"       if prec       == prec       else " n/a"
+    rec_s    = f"{rec:.3f}"        if rec        == rec        else " n/a"
+    aupr_s   = f"{auc_pr:.3f}"    if auc_pr     == auc_pr     else " n/a"
+    ns_s     = f"{int(n_samples)}" if n_samples  == n_samples  else "n/a"
     print(
         f"  Round {rnd:>2}/{num_rounds}  "
-        f"Acc={acc:.1%}  AUC={auc:.3f} │{bar}│  F1={f1:.3f}"
+        f"train_loss={tl_s}  "
+        f"Acc={acc:.1%}  "
+        f"Prec={pr_s}  Rec={rec_s}  "
+        f"F1={f1:.3f}  "
+        f"AUC-ROC={auc_roc:.3f} │{bar}│  "
+        f"AUC-PR={aupr_s}  "
+        f"n={ns_s}"
     )
 
 
@@ -107,11 +130,17 @@ def _print_final_chart(
 ) -> None:
     """Print a full table + AUC-ROC sparkline chart after all rounds."""
     # Build lookup: metric_name -> {round: value}
-    dist = history.metrics_distributed
-    acc_map  = dict(dist.get("accuracy", []))
-    auc_map  = dict(dist.get("auc_roc",  []))
-    f1_map   = dict(dist.get("f1",        []))
-    loss_map = {}
+    dist      = history.metrics_distributed
+    fit_dist  = history.metrics_fit
+    acc_map   = dict(dist.get("accuracy",  []))
+    auc_map   = dict(dist.get("auc_roc",   []))
+    aupr_map  = dict(dist.get("auc_pr",    []))
+    f1_map    = dict(dist.get("f1",        []))
+    prec_map  = dict(dist.get("precision", []))
+    rec_map   = dict(dist.get("recall",    []))
+    ns_map    = dict(dist.get("n_samples", []))
+    tl_map    = dict(fit_dist.get("train_loss", []))
+    loss_map  = {}
     for rnd, val in history.losses_distributed:
         loss_map[rnd] = val
 
@@ -124,23 +153,45 @@ def _print_final_chart(
     auc_hi = max((v for v in auc_values if not (v != v)), default=1.0)
     auc_lo = min(auc_lo, 0.5)  # always start scale at 0.5 for AUC
 
-    W = 62
+    W = 88
     print()
     print("═" * W)
     print(f"  FL Training Results  │  strategy={strategy_name}  rounds={num_rounds}")
     print("═" * W)
-    print(f"  {'Rnd':>3}  {'Loss':>7}  {'Accuracy':>9}  {'AUC-ROC':>8}  {'F1':>6}")
-    print(f"  {'─'*3}  {'─'*7}  {'─'*9}  {'─'*8}  {'─'*6}")
+    print(
+        f"  {'Rnd':>3}  {'TrnLoss':>8}  {'ValLoss':>8}  "
+        f"{'Accuracy':>9}  {'Precision':>9}  {'Recall':>7}  "
+        f"{'F1':>6}  {'AUC-ROC':>8}  {'AUC-PR':>7}  {'Samples':>8}"
+    )
+    print(
+        f"  {'─'*3}  {'─'*8}  {'─'*8}  "
+        f"{'─'*9}  {'─'*9}  {'─'*7}  "
+        f"{'─'*6}  {'─'*8}  {'─'*7}  {'─'*8}"
+    )
     for r in rounds:
-        acc  = acc_map.get(r,  float("nan"))
-        auc  = auc_map.get(r,  float("nan"))
-        f1v  = f1_map.get(r,   float("nan"))
-        loss = loss_map.get(r, float("nan"))
-        acc_s  = f"{acc:.1%}"   if acc  == acc  else "  n/a  "
-        auc_s  = f"{auc:.4f}"  if auc  == auc  else "  n/a "
+        acc   = acc_map.get(r,  float("nan"))
+        auc   = auc_map.get(r,  float("nan"))
+        aupr  = aupr_map.get(r, float("nan"))
+        f1v   = f1_map.get(r,   float("nan"))
+        prec  = prec_map.get(r, float("nan"))
+        rec   = rec_map.get(r,  float("nan"))
+        ns    = ns_map.get(r,   float("nan"))
+        loss  = loss_map.get(r, float("nan"))
+        tl    = tl_map.get(r,   float("nan"))
+        acc_s  = f"{acc:.1%}"   if acc  == acc  else "   n/a  "
+        auc_s  = f"{auc:.4f}"  if auc  == auc  else "  n/a  "
+        aupr_s = f"{aupr:.4f}" if aupr == aupr else "  n/a "
         f1_s   = f"{f1v:.4f}"  if f1v  == f1v  else " n/a  "
-        loss_s = f"{loss:.4f}" if loss == loss else "  n/a "
-        print(f"  {r:>3}  {loss_s:>7}  {acc_s:>9}  {auc_s:>8}  {f1_s:>6}")
+        prec_s = f"{prec:.4f}" if prec == prec else "   n/a  "
+        rec_s  = f"{rec:.4f}"  if rec  == rec  else "  n/a "
+        ns_s   = f"{int(ns)}"  if ns   == ns   else "   n/a"
+        loss_s = f"{loss:.4f}" if loss == loss else "  n/a  "
+        tl_s   = f"{tl:.4f}"   if tl   == tl   else "  n/a  "
+        print(
+            f"  {r:>3}  {tl_s:>8}  {loss_s:>8}  "
+            f"{acc_s:>9}  {prec_s:>9}  {rec_s:>7}  "
+            f"{f1_s:>6}  {auc_s:>8}  {aupr_s:>7}  {ns_s:>8}"
+        )
     print()
     # AUC-ROC bar chart
     bar_w = 28
@@ -169,12 +220,17 @@ class _CaptureFinalParams:
         # Instance-level attributes — avoid mutable class-level defaults
         self.final_params: Optional[List[np.ndarray]] = None
         self._round_eval_metrics: Dict[int, Dict[str, float]] = {}
+        self._round_fit_metrics:  Dict[int, Dict[str, float]] = {}
         self._num_rounds: int = NUM_ROUNDS
 
     def aggregate_fit(self, server_round, results, failures):
         aggregated = super().aggregate_fit(server_round, results, failures)  # type: ignore[misc]
         if aggregated[0] is not None:
             self.final_params = fl.common.parameters_to_ndarrays(aggregated[0])
+        # Cache weighted-average fit metrics (e.g. train_loss) for this round
+        agg_fit_metrics = aggregated[1] if aggregated and len(aggregated) > 1 else {}
+        if agg_fit_metrics:
+            self._round_fit_metrics[server_round] = dict(agg_fit_metrics)
         return aggregated
 
     def aggregate_evaluate(self, server_round, results, failures):
@@ -184,7 +240,8 @@ class _CaptureFinalParams:
         agg_metrics = aggregated[1] if aggregated and len(aggregated) > 1 else {}
         if agg_metrics:
             self._round_eval_metrics[server_round] = dict(agg_metrics)
-            _print_round_summary(server_round, self._num_rounds, agg_metrics)
+            fit_metrics = self._round_fit_metrics.get(server_round, {})
+            _print_round_summary(server_round, self._num_rounds, agg_metrics, fit_metrics)
         return aggregated
 
 

@@ -79,15 +79,26 @@ class HospitalClient(fl.client.NumPyClient):
         local_epochs = int(config.get("local_epochs", LOCAL_EPOCHS))
 
         self.model.train()
+        total_loss    = 0.0
+        total_batches = 0
         for _ in range(local_epochs):
             for X, y in self.train_loader:
                 self.optimizer.zero_grad()
                 loss = self.criterion(self.model(X).squeeze(), y)
                 loss.backward()
                 self.optimizer.step()
+                total_loss    += loss.item()
+                total_batches += 1
 
-        print(f"[Hospital #{self.id}] Local training complete ({local_epochs} epochs)")
-        return get_parameters(self.model), len(self.train_loader.dataset), {}
+        avg_train_loss = total_loss / max(total_batches, 1)
+        n_samples      = len(self.train_loader.dataset)
+        print(
+            f"[Hospital #{self.id}] Local training — "
+            f"{local_epochs} epochs  "
+            f"train_loss={avg_train_loss:.4f}  "
+            f"n_samples={n_samples}"
+        )
+        return get_parameters(self.model), n_samples, {"train_loss": avg_train_loss}
 
     # ------------------------------------------------------------------
     def evaluate(self, parameters: list, config: dict) -> tuple:
@@ -111,14 +122,22 @@ class HospitalClient(fl.client.NumPyClient):
 
         print(
             f"[Hospital #{self.id}] "
+            f"val_loss={avg_loss:.4f}  "
             f"Acc={metrics['accuracy']:.1%}  "
+            f"Prec={metrics['precision']:.3f}  "
+            f"Rec={metrics['recall']:.3f}  "
             f"F1={metrics['f1']:.3f}  "
-            f"AUC={metrics['auc_roc']:.3f}"
+            f"AUC-ROC={metrics['auc_roc']:.3f}  "
+            f"AUC-PR={metrics['auc_pr']:.3f}  "
+            f"n={int(metrics['n_samples'])}"
         )
         return avg_loss, int(metrics["n_samples"]), {
-            "accuracy": metrics["accuracy"],
-            "f1":       metrics["f1"],
-            "auc_roc":  metrics["auc_roc"],
+            "accuracy":    metrics["accuracy"],
+            "precision":   metrics["precision"],
+            "recall":      metrics["recall"],
+            "f1":          metrics["f1"],
+            "auc_roc":     metrics["auc_roc"],
+            "auc_pr":      metrics["auc_pr"],
             "hospital_id": str(self.id),
         }
 
