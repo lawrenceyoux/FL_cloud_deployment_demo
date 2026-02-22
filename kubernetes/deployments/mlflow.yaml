@@ -4,9 +4,6 @@ kind: ServiceAccount
 metadata:
   name: mlflow-sa
   namespace: mlops
-  annotations:
-    # Replace <account-id> and <region> after Terraform apply outputs the role ARN
-    eks.amazonaws.com/role-arn: "arn:aws:iam::<account-id>:role/fl-demo-mlflow-irsa"
 ---
 apiVersion: apps/v1
 kind: StatefulSet
