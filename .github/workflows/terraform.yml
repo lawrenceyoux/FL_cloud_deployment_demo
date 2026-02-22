@@ -107,14 +107,24 @@ jobs:
 
       - name: Import existing access entry (if exists)
         if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
-        continue-on-error: true
         run: |
           CLUSTER_NAME="fl-demo-cluster"
           CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
           echo "Attempting to import access entry for: $CALLER_ARN"
+          
+          # Import will succeed if not in state, fail if already imported - both are OK
           terraform import \
             'module.eks.aws_eks_access_entry.this["cluster_creator"]' \
-            "$CLUSTER_NAME#$CALLER_ARN" || true
+            "$CLUSTER_NAME#$CALLER_ARN" 2>&1 | tee import.log
+          
+          # Check if already imported
+          if grep -q "Resource already managed" import.log || grep -q "Successfully imported" import.log; then
+            echo "✅ Access entry handled successfully"
+            exit 0
+          fi
+          
+          # If import failed for other reason, that's OK - we'll handle in plan
+          exit 0
 
       - name: Terraform Plan
         if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
