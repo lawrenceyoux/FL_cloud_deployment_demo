@@ -62,6 +62,50 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_training" {
   role       = module.eks.eks_managed_node_groups["training"].iam_role_name
 }
 
+# ── Load Balancer permissions for Ingress Controller ──────────────────────────
+# The NGINX Ingress Controller needs to create Network/Application Load Balancers
+resource "aws_iam_policy" "node_elb" {
+  name        = "${var.cluster_name}-node-elb-policy"
+  description = "Allows EKS nodes to create and manage ELBs for ingress"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "elasticloadbalancing:*",
+          "ec2:DescribeAccountAttributes",
+          "ec2:DescribeAddresses",
+          "ec2:DescribeInternetGateways",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeInstances",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeTags",
+          "ec2:CreateSecurityGroup",
+          "ec2:CreateTags",
+          "ec2:DeleteTags",
+          "ec2:AuthorizeSecurityGroupIngress",
+          "ec2:RevokeSecurityGroupIngress"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "node_elb_system" {
+  policy_arn = aws_iam_policy.node_elb.arn
+  role       = module.eks.eks_managed_node_groups["system"].iam_role_name
+}
+
+resource "aws_iam_role_policy_attachment" "node_elb_training" {
+  policy_arn = aws_iam_policy.node_elb.arn
+  role       = module.eks.eks_managed_node_groups["training"].iam_role_name
+}
+
 # ── Outputs ───────────────────────────────────────────────────────────────────
 output "eks_cluster_name" {
   description = "EKS cluster name"
