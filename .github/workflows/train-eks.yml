@@ -89,19 +89,28 @@ jobs:
                --region "${{ secrets.AWS_REGION }}" \
                --image-scanning-configuration scanOnPush=true
 
-      - name: Login to Amazon ECR
+      - name: Compute image URI
         id: ecr
         run: |
+          # Resolve the account ID and construct the full ECR image URI.
+          # This is done in its own step so the output is written to
+          # $GITHUB_OUTPUT unconditionally — before docker login, which is a
+          # separate network call that could fail and would otherwise abort the
+          # script before the echo, leaving image_uri empty in the next job.
           ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
           REGION="${{ secrets.AWS_REGION }}"
           REGISTRY="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
           IMAGE_URI="${REGISTRY}/${ECR_REPO}:${{ steps.run_id.outputs.run_id }}"
 
-          aws ecr get-login-password --region "$REGION" | \
-            docker login --username AWS --password-stdin "$REGISTRY"
-
           echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "registry=${REGISTRY}"  >> "$GITHUB_OUTPUT"
           echo "Image URI: ${IMAGE_URI}"
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region "${{ secrets.AWS_REGION }}" | \
+            docker login --username AWS --password-stdin "${{ steps.ecr.outputs.registry }}"
+          echo "✅ Docker logged in to ECR"
 
       - name: Build Docker image
         run: |
