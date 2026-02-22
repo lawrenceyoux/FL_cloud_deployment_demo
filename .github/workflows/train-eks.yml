@@ -155,7 +155,12 @@ jobs:
     if: github.event.inputs.skip_job != 'true'
 
     env:
-      FL_IMAGE:     ${{ needs.build-push.outputs.image_uri }}
+      # FL_IMAGE is NOT passed as a cross-job output because
+      # aws-actions/configure-aws-credentials@v4 masks the AWS account ID via
+      # core.setSecret(). Any job output whose value contains the masked account
+      # ID is blanked entirely by GitHub Actions before it reaches the next job.
+      # Instead we recompute the URI from RUN_ID (which crosses safely — it is
+      # a plain git SHA with no masked content) after AWS creds are configured.
       RUN_ID:       ${{ needs.build-push.outputs.run_id }}
       TRAIN_EPOCHS: ${{ github.event.inputs.epochs }}
       TRAIN_MODEL:  ${{ github.event.inputs.model }}
@@ -168,25 +173,21 @@ jobs:
       - name: Debug — inspect values received from build-push
         run: |
           echo "──── run-on-eks received values ──────────────────────────"
-          echo "FL_IMAGE     : '${FL_IMAGE}'"
           echo "RUN_ID       : '${RUN_ID}'"
           echo "TRAIN_EPOCHS : '${TRAIN_EPOCHS}'"
           echo "TRAIN_MODEL  : '${TRAIN_MODEL}'"
           echo "TRAIN_LOSS   : '${TRAIN_LOSS}'"
           echo "──────────────────────────────────────────────────────────"
           MISSING=""
-          [ -z "${FL_IMAGE}" ]     && MISSING="${MISSING} FL_IMAGE"
           [ -z "${RUN_ID}" ]       && MISSING="${MISSING} RUN_ID"
           [ -z "${TRAIN_EPOCHS}" ] && MISSING="${MISSING} TRAIN_EPOCHS"
           [ -z "${TRAIN_MODEL}" ]  && MISSING="${MISSING} TRAIN_MODEL"
           [ -z "${TRAIN_LOSS}" ]   && MISSING="${MISSING} TRAIN_LOSS"
           if [ -n "${MISSING}" ]; then
             echo "❌ The following env vars are empty:${MISSING}"
-            echo "   FL_IMAGE / RUN_ID come from build-push job outputs."
-            echo "   TRAIN_* come from workflow_dispatch inputs (check defaults)."
             exit 1
           fi
-          echo "✅ All required values are present"
+          echo "✅ RUN_ID and TRAIN_* are present"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -194,6 +195,19 @@ jobs:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Compute FL_IMAGE from RUN_ID
+        # Reconstruct the ECR image URI locally. We cannot use the build-push
+        # job output because configure-aws-credentials masks the account ID,
+        # which causes GitHub Actions to blank any cross-job output that
+        # contains it. RUN_ID (plain git SHA) crosses safely; the account ID
+        # is resolved fresh here from the configured credentials.
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION }}"
+          FL_IMAGE="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:${RUN_ID}"
+          echo "FL_IMAGE=${FL_IMAGE}" >> "$GITHUB_ENV"
+          echo "✅ FL_IMAGE = ${FL_IMAGE}"
 
       - name: Update kubeconfig
         run: |
