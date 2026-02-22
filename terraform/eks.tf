@@ -14,7 +14,9 @@ module "eks" {
   enable_cluster_creator_admin_permissions = true
 
   vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
+  # Include both public and private subnets so LoadBalancers can be public
+  # Nodes remain in private subnets, but AWS can create ELBs in public subnets
+  subnet_ids = concat(module.vpc.private_subnets, module.vpc.public_subnets)
 
   eks_managed_node_groups = {
     # Pluralsight sandbox limits:
@@ -59,50 +61,6 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_system" {
 
 resource "aws_iam_role_policy_attachment" "ebs_csi_training" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
-  role       = module.eks.eks_managed_node_groups["training"].iam_role_name
-}
-
-# ── Load Balancer permissions for Ingress Controller ──────────────────────────
-# The NGINX Ingress Controller needs to create Network/Application Load Balancers
-resource "aws_iam_policy" "node_elb" {
-  name        = "${var.cluster_name}-node-elb-policy"
-  description = "Allows EKS nodes to create and manage ELBs for ingress"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "elasticloadbalancing:*",
-          "ec2:DescribeAccountAttributes",
-          "ec2:DescribeAddresses",
-          "ec2:DescribeInternetGateways",
-          "ec2:DescribeSecurityGroups",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeVpcs",
-          "ec2:DescribeInstances",
-          "ec2:DescribeNetworkInterfaces",
-          "ec2:DescribeTags",
-          "ec2:CreateSecurityGroup",
-          "ec2:CreateTags",
-          "ec2:DeleteTags",
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:RevokeSecurityGroupIngress"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "node_elb_system" {
-  policy_arn = aws_iam_policy.node_elb.arn
-  role       = module.eks.eks_managed_node_groups["system"].iam_role_name
-}
-
-resource "aws_iam_role_policy_attachment" "node_elb_training" {
-  policy_arn = aws_iam_policy.node_elb.arn
   role       = module.eks.eks_managed_node_groups["training"].iam_role_name
 }
 
