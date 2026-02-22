@@ -181,8 +181,38 @@ jobs:
 
       - name: Apply training Job  (envsubst replaces FL_IMAGE / TRAIN_* / RUN_ID)
         run: |
-          apt-get install -y gettext-base -q 2>/dev/null || true    # ubuntu-latest already has it
-          envsubst < kubernetes/jobs/train-baseline.yaml | kubectl apply -f -
+          # ubuntu-latest ships gettext-base, but install gracefully just in case
+          sudo apt-get install -y gettext-base -q 2>/dev/null || true
+
+          # Fail fast: if the build-push job did not export FL_IMAGE the Job
+          # spec will have an empty image field and Kubernetes will reject it
+          # with "Required value" — surface the real cause here instead.
+          if [ -z "${FL_IMAGE}" ]; then
+            echo "❌ FL_IMAGE is empty. The build-push job did not export image_uri."
+            echo "   Check the 'Login to Amazon ECR' step in the build-push job."
+            exit 1
+          fi
+          if [ -z "${RUN_ID}" ]; then
+            echo "❌ RUN_ID is empty."
+            exit 1
+          fi
+
+          echo "FL_IMAGE = ${FL_IMAGE}"
+          echo "RUN_ID   = ${RUN_ID}"
+          echo "EPOCHS   = ${TRAIN_EPOCHS}  MODEL = ${TRAIN_MODEL}  LOSS = ${TRAIN_LOSS}"
+          echo ""
+
+          # Pass an explicit variable list so envsubst only replaces the five
+          # known placeholders and does not clobber any unrelated ${...} tokens
+          # that might appear in the YAML (e.g. shell variable expressions).
+          RENDERED=$(envsubst '${FL_IMAGE} ${RUN_ID} ${TRAIN_EPOCHS} ${TRAIN_MODEL} ${TRAIN_LOSS}' \
+                       < kubernetes/jobs/train-baseline.yaml)
+
+          echo "──── Rendered manifest ────────────────────────────────────────"
+          echo "${RENDERED}"
+          echo "───────────────────────────────────────────────────────────────"
+
+          echo "${RENDERED}" | kubectl apply -f -
           echo ""
           echo "Job submitted: train-baseline-${RUN_ID}"
           echo "Watching pod come up…"
