@@ -71,6 +71,8 @@ spec:
         - --default-artifact-root
         - "s3://fl-demo-mlflow/artifacts"
         - --serve-artifacts
+        - --allowed-hosts
+        - "*"
         resources:
           requests:
             memory: "512Mi"
