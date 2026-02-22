@@ -79,14 +79,16 @@ spec:
         # - name: S3_RAW_BUCKET
         #   value: "fl-demo-data-hospital-1"
 
+        # ── Silence noisy git-python warning (no git in container) ────
+        - name: GIT_PYTHON_REFRESH
+          value: "quiet"
+
         # ── S3 model artifact upload ────────────────────────────────
-        # Set USE_S3_ARTIFACTS=1 to push the trained model to S3 after
-        # training (in addition to logging it to MLflow).
-        # The fl-trainer ServiceAccount must have an IRSA role with
-        # s3:PutObject on the target bucket, or provide AWS creds via a
-        # Kubernetes Secret mounted here:
+        # Enabled: the training node IAM role has s3:PutObject/GetObject
+        # on fl-demo-models (attached in terraform/eks.tf).
+        # Set to "0" to skip S3 upload and log to MLflow only.
         - name: USE_S3_ARTIFACTS
-          value: "0"
+          value: "1"
         - name: S3_MODEL_BUCKET
           valueFrom:
             configMapKeyRef:

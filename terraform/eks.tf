@@ -72,7 +72,31 @@ resource "aws_iam_role_policy_attachment" "ebs_csi_training" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
   role       = module.eks.eks_managed_node_groups["training"].iam_role_name
 }
+# ── S3 model artifact access for training pods ────────────────────────────
+# Grants the training node IAM role read/write access to fl-demo-models.
+# Training pods (which run on training nodes) inherit this via the node
+# instance profile — no IRSA / service account annotation needed for demo.
+resource "aws_iam_role_policy" "training_s3_models" {
+  name = "fl-training-s3-models"
+  role = module.eks.eks_managed_node_groups["training"].iam_role_name
 
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "FlDemoModelsBucket"
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:ListBucket"
+      ]
+      Resource = [
+        "arn:aws:s3:::fl-demo-models",
+        "arn:aws:s3:::fl-demo-models/*"
+      ]
+    }]
+  })
+}
 # ── Outputs ───────────────────────────────────────────────────────────────────
 output "eks_cluster_name" {
   description = "EKS cluster name"

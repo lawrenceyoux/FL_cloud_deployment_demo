@@ -373,19 +373,25 @@ jobs:
       - name: Wait for Job completion and check exit code
         run: |
           echo "Waiting for Job to complete or fail (timeout: 60 min)…"
-          # Wait for complete OR failed so the step doesn't hang on a crashed pod
-          kubectl wait \
-            --for=condition=complete \
-            --timeout=3600s \
-            job/"train-baseline-${RUN_ID}" \
-            -n "$NAMESPACE" \
-          || kubectl wait \
-            --for=condition=failed \
-            --timeout=10s \
-            job/"train-baseline-${RUN_ID}" \
-            -n "$NAMESPACE" \
-          && { echo "❌ Job failed — see logs above"; exit 1; }
-          echo "✅ Job completed successfully"
+          # NOTE: never write:  (kubectl wait --for=complete ...) || (kubectl wait --for=failed ...) && exit 1
+          # Shell evaluates as: (A || B) && C — if A succeeds, C (exit 1) still runs.
+          # Use an explicit if/else so success and failure paths are unambiguous.
+          if kubectl wait \
+               --for=condition=complete \
+               --timeout=3600s \
+               job/"train-baseline-${RUN_ID}" \
+               -n "$NAMESPACE"; then
+            echo "✅ Job completed successfully"
+          else
+            echo "❌ Job did not complete — checking for failure condition…"
+            kubectl wait \
+              --for=condition=failed \
+              --timeout=30s \
+              job/"train-baseline-${RUN_ID}" \
+              -n "$NAMESPACE" || true
+            echo "❌ Job failed — see logs above"
+            exit 1
+          fi
 
       - name: Show final job status
         if: always()
