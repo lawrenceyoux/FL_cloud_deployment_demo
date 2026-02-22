@@ -1,0 +1,392 @@
+name: FL Training — Full Federated (EKS)
+
+# Deploys the full Flower federated learning demo on EKS:
+#   1 FL server Job  (src/federated/server.py)  ─── waits for MIN_CLIENTS
+#   3 Hospital client Jobs (src/federated/client.py)  ─── connect to server
+#
+# Architecture on EKS:
+#
+#   ┌──────────────────────┐
+#   │  fl-server Job pod   │  ← runs FedAvg/FedProx, aggregates model
+#   │  (src.federated.     │     each round, saves final weights to S3
+#   │   server)            │
+#   └──────────┬───────────┘
+#              │  ClusterIP Service "fl-server:8080"
+#   ┌──────────┼───────────┐
+#   │          │           │
+#   ▼          ▼           ▼
+# fl-client-h1  fl-client-h2  fl-client-h3
+# (Hospital 1)  (Hospital 2)  (Hospital 3)
+#   each on its own pod, trains on local data,
+#   sends gradients to server — raw data never leaves the pod
+#
+# Prerequisites (run once first):
+#   1. "Terraform — FL Infrastructure"  (apply) — provisions EKS, S3, ECR
+#   2. "K8s — Cluster Setup & Add-ons"          — deploys MLflow to EKS
+#   3. "Train Baseline on EKS"                  — optional; establishes baseline
+#
+# All MLflow metrics are visible at:
+#   kubectl port-forward -n mlops svc/mlflow-server 5000:5000
+#   open http://localhost:5000  → experiment "federated-stroke-prediction"
+
+on:
+  workflow_dispatch:
+    inputs:
+      num_rounds:
+        description: "Number of FL rounds"
+        required: false
+        default: "10"
+      min_clients:
+        description: "Clients required per round"
+        required: false
+        default: "3"
+      fl_strategy:
+        description: "Aggregation strategy"
+        required: false
+        default: "fedavg"
+        type: choice
+        options:
+          - fedavg
+          - fedprox
+      num_local_epochs:
+        description: "Local training epochs per round (per client)"
+        required: false
+        default: "5"
+      skip_job:
+        description: "Build & push image only — do not run EKS Jobs"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+env:
+  ECR_REPO:     fl-stroke
+  CLUSTER_NAME: fl-demo-cluster
+  NAMESPACE:    federated-learning
+
+# ── Job 1: Build Docker image and push to ECR ─────────────────────────────────
+jobs:
+  build-push:
+    name: "Build & push Docker image"
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.run_id.outputs.run_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive short run ID (git SHA prefix)
+        id: run_id
+        run: echo "run_id=$(echo $GITHUB_SHA | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Create ECR repository (idempotent)
+        run: |
+          aws ecr describe-repositories --repository-names "$ECR_REPO" \
+            --region "${{ secrets.AWS_REGION }}" > /dev/null 2>&1 \
+          || aws ecr create-repository \
+               --repository-name "$ECR_REPO" \
+               --region "${{ secrets.AWS_REGION }}" \
+               --image-scanning-configuration scanOnPush=true
+
+      - name: Compute image URI & login to ECR
+        id: ecr
+        run: |
+          set -e
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION }}"
+          REGISTRY="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
+          IMAGE_URI="${REGISTRY}/${ECR_REPO}:${{ steps.run_id.outputs.run_id }}"
+          echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+          echo "registry=${REGISTRY}"  >> "$GITHUB_OUTPUT"
+          aws ecr get-login-password --region "${REGION}" | \
+            docker login --username AWS --password-stdin "${REGISTRY}"
+          echo "✅ ECR login OK — image: ${IMAGE_URI}"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --file docker/Dockerfile \
+            --tag "${{ steps.ecr.outputs.image_uri }}" \
+            .
+
+      - name: Push to ECR
+        run: |
+          docker push "${{ steps.ecr.outputs.image_uri }}"
+          echo "✅ Pushed: ${{ steps.ecr.outputs.image_uri }}"
+
+# ── Job 2: Run full FL training on EKS ────────────────────────────────────────
+  run-fl-training:
+    name: "Run FL training on EKS"
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: github.event.inputs.skip_job != 'true'
+
+    env:
+      RUN_ID:           ${{ needs.build-push.outputs.run_id }}
+      NUM_ROUNDS:       ${{ github.event.inputs.num_rounds }}
+      MIN_CLIENTS:      ${{ github.event.inputs.min_clients }}
+      FL_STRATEGY:      ${{ github.event.inputs.fl_strategy }}
+      NUM_LOCAL_EPOCHS: ${{ github.event.inputs.num_local_epochs }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        run: |
+          echo "──── FL training parameters ──────────────────────────────"
+          echo "RUN_ID           : ${RUN_ID}"
+          echo "NUM_ROUNDS       : ${NUM_ROUNDS}"
+          echo "MIN_CLIENTS      : ${MIN_CLIENTS}"
+          echo "FL_STRATEGY      : ${FL_STRATEGY}"
+          echo "NUM_LOCAL_EPOCHS : ${NUM_LOCAL_EPOCHS}"
+          echo "──────────────────────────────────────────────────────────"
+          for VAR in RUN_ID NUM_ROUNDS MIN_CLIENTS FL_STRATEGY NUM_LOCAL_EPOCHS; do
+            [ -z "${!VAR}" ] && echo "❌ ${VAR} is empty" && exit 1
+          done
+          echo "✅ All parameters present"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Reconstruct FL_IMAGE from RUN_ID
+        # account ID is masked by configure-aws-credentials; rebuild locally
+        run: |
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          REGION="${{ secrets.AWS_REGION }}"
+          FL_IMAGE="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${ECR_REPO}:${RUN_ID}"
+          echo "FL_IMAGE=${FL_IMAGE}" >> "$GITHUB_ENV"
+          echo "✅ FL_IMAGE = ${FL_IMAGE}"
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region "${{ secrets.AWS_REGION }}" \
+            --name  "$CLUSTER_NAME"
+
+      - name: Grant caller cluster-admin access
+        run: |
+          CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+          aws eks create-access-entry \
+            --cluster-name "$CLUSTER_NAME" \
+            --principal-arn "$CALLER_ARN" \
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
+          aws eks associate-access-policy \
+            --cluster-name "$CLUSTER_NAME" \
+            --principal-arn "$CALLER_ARN" \
+            --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+            --access-scope type=cluster \
+            --region "${{ secrets.AWS_REGION }}" 2>/dev/null || true
+
+      - name: Apply namespaces and ServiceAccount (idempotent)
+        run: kubectl apply -f kubernetes/namespaces/fl-namespace.yaml
+
+      - name: Check MLflow is running
+        run: |
+          STATUS=$(kubectl get pods -n mlops -l app=mlflow-server \
+                     -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "NotFound")
+          if [ "$STATUS" != "Running" ]; then
+            echo "⚠️  MLflow pod is not Running (status=$STATUS)."
+            echo "Run the 'K8s — Cluster Setup & Add-ons' workflow first."
+            exit 1
+          fi
+          echo "✅ MLflow is Running"
+
+      # ── Inject AWS credentials for S3 model upload (demo workaround) ────────
+      # In production: annotate mlflow-sa with an IRSA role and remove this step.
+      - name: Create aws-fl-creds K8s Secret (for S3 model upload)
+        run: |
+          kubectl delete secret aws-fl-creds -n "$NAMESPACE" --ignore-not-found=true
+          kubectl create secret generic aws-fl-creds \
+            --namespace "$NAMESPACE" \
+            --from-literal=AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            --from-literal=AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          echo "✅ aws-fl-creds secret created (note: use IRSA in production)"
+
+      # ── Clean up any previous run's resources ───────────────────────────────
+      - name: Delete previous FL resources (if any)
+        run: |
+          echo "Cleaning up previous FL server/client Jobs and Service…"
+          kubectl delete service fl-server -n "$NAMESPACE" --ignore-not-found=true
+          # Delete all fl-client Jobs (any past run-id)
+          kubectl delete jobs -l app=fl-client -n "$NAMESPACE" --ignore-not-found=true
+          # Delete server Jobs from past runs
+          kubectl delete jobs -l app=fl-server -n "$NAMESPACE" --ignore-not-found=true
+          echo "✅ Previous resources cleaned up"
+
+      # ── Deploy FL Server ─────────────────────────────────────────────────────
+      - name: Deploy FL server Job + Service
+        run: |
+          sudo apt-get install -y gettext-base -q 2>/dev/null || true
+          envsubst '${FL_IMAGE} ${RUN_ID} ${NUM_ROUNDS} ${MIN_CLIENTS} ${FL_STRATEGY} ${NUM_LOCAL_EPOCHS}' \
+            < kubernetes/deployments/fl-server.yaml | kubectl apply -f -
+          echo "✅ fl-server Job + Service applied"
+
+      - name: Wait for FL server pod to start
+        run: |
+          echo "Waiting for fl-server pod to be Running (up to 3 min)…"
+          for i in $(seq 1 18); do
+            POD=$(kubectl get pods -l "app=fl-server,run-id=${RUN_ID}" \
+                    -n "$NAMESPACE" --no-headers 2>/dev/null | head -1)
+            PHASE=$(echo "$POD" | awk '{print $3}')
+            if [ "$PHASE" = "Running" ] || [ "$PHASE" = "ContainerCreating" ]; then
+              echo "✅ fl-server pod is ${PHASE} after $((i * 10))s"
+              break
+            fi
+            echo "  ⏳ ${PHASE:-Pending} (${i}/18, waiting 10s)"
+            sleep 10
+          done
+          kubectl get pods -l "app=fl-server,run-id=${RUN_ID}" -n "$NAMESPACE" -o wide
+
+      # ── Deploy Hospital Client Jobs (3 pods, all in parallel) ────────────────
+      - name: Deploy hospital client Jobs (3 pods in parallel)
+        run: |
+          sudo apt-get install -y gettext-base -q 2>/dev/null || true
+          echo "Launching hospital client Jobs…"
+          for HOSPITAL_ID in 1 2 3; do
+            export HOSPITAL_ID
+            envsubst '${FL_IMAGE} ${RUN_ID} ${HOSPITAL_ID}' \
+              < kubernetes/jobs/fl-client.yaml | kubectl apply -f -
+            echo "  ✅ fl-client-h${HOSPITAL_ID}-${RUN_ID} submitted"
+          done
+          echo ""
+          echo "All client Jobs submitted — each client connects to fl-server:8080"
+          kubectl get jobs -l "app=fl-client,run-id=${RUN_ID}" -n "$NAMESPACE"
+
+      # ── Stream FL server logs (training progress is visible here) ────────────
+      - name: Stream FL server logs
+        run: |
+          echo "═══ Streaming FL server logs (Ctrl+C skips to next step) ═══════════"
+          echo "    Training metrics appear each round. Monitor accuracy convergence."
+          echo ""
+
+          # Wait for server pod to be Running before streaming
+          SERVER_POD=""
+          for i in $(seq 1 12); do
+            SERVER_POD=$(kubectl get pods -l "app=fl-server,run-id=${RUN_ID}" \
+                           -n "$NAMESPACE" \
+                           -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}' \
+                           2>/dev/null | tr ' ' '\n' | head -1)
+            [ -n "$SERVER_POD" ] && break
+            echo "  ⏳ Waiting for server pod to run… (${i}/12)"
+            sleep 10
+          done
+
+          if [ -z "$SERVER_POD" ]; then
+            echo "⚠️  Server pod did not reach Running state — dumping describe:"
+            kubectl describe pods -l "app=fl-server,run-id=${RUN_ID}" -n "$NAMESPACE" || true
+          else
+            echo "Streaming logs from ${SERVER_POD}…"
+            kubectl logs -n "$NAMESPACE" -f "$SERVER_POD" \
+              --pod-running-timeout=60s || true
+          fi
+          echo "═══ Server log stream ended ═══════════════════════════════════════"
+
+      # ── Wait for all client Jobs to complete ─────────────────────────────────
+      - name: Wait for all client Jobs to complete
+        run: |
+          echo "Waiting for all 3 hospital client Jobs to complete (timeout: 60 min)…"
+          FAILED=0
+          for HOSPITAL_ID in 1 2 3; do
+            JOB="fl-client-h${HOSPITAL_ID}-${RUN_ID}"
+            echo "  ⏳ Waiting for ${JOB}…"
+            if kubectl wait --for=condition=complete \
+                 --timeout=3600s job/"$JOB" -n "$NAMESPACE"; then
+              echo "  ✅ ${JOB} completed"
+            else
+              echo "  ❌ ${JOB} failed or timed out"
+              kubectl describe job "$JOB" -n "$NAMESPACE" || true
+              kubectl logs -l "job-name=${JOB}" -n "$NAMESPACE" --tail=50 || true
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          [ "$FAILED" -gt 0 ] && exit 1
+          echo "✅ All 3 hospital clients completed successfully"
+
+      # ── Wait for FL server Job to complete (saves model + exits) ─────────────
+      - name: Wait for FL server to finish and save model
+        run: |
+          SERVER_JOB="fl-server-${RUN_ID}"
+          echo "Waiting for FL server Job to complete (timeout: 10 min)…"
+          echo "(Server completes one final aggregation then uploads model to S3)"
+          if kubectl wait --for=condition=complete \
+               --timeout=600s job/"$SERVER_JOB" -n "$NAMESPACE"; then
+            echo "✅ FL server Job completed"
+          else
+            echo "❌ FL server Job timed out or failed"
+            kubectl describe job "$SERVER_JOB" -n "$NAMESPACE" || true
+            exit 1
+          fi
+          echo ""
+          echo "═══ Final server logs ══════════════════════════════════════════════"
+          kubectl logs -l "job-name=${SERVER_JOB}" -n "$NAMESPACE" --tail=50 || true
+          echo "═══════════════════════════════════════════════════════════════════"
+
+      # ── Verify model was saved to S3 ─────────────────────────────────────────
+      - name: Verify global model uploaded to S3
+        run: |
+          BUCKET=$(kubectl get configmap fl-config -n "$NAMESPACE" \
+                     -o jsonpath='{.data.S3_MODEL_BUCKET}' 2>/dev/null \
+                   || echo "fl-demo-models")
+          echo "Checking s3://${BUCKET}/global-model/ for the uploaded model…"
+          aws s3 ls "s3://${BUCKET}/global-model/" --recursive | tail -10 || true
+
+          COUNT=$(aws s3 ls "s3://${BUCKET}/global-model/" --recursive 2>/dev/null | \
+                    grep "model.pt" | wc -l || echo "0")
+          if [ "$COUNT" -gt 0 ]; then
+            echo "✅ Global model found in S3 (${COUNT} version(s))"
+          else
+            echo "⚠️  No model.pt found in s3://${BUCKET}/global-model/"
+            echo "   Training succeeded — check MLflow for model artifact."
+            echo "   Server logs above should show '❌ S3 global-model upload FAILED'"
+          fi
+
+      # ── Clean up K8s resources ───────────────────────────────────────────────
+      - name: Clean up credentials Secret
+        if: always()
+        run: |
+          kubectl delete secret aws-fl-creds -n "$NAMESPACE" --ignore-not-found=true
+          echo "✅ aws-fl-creds secret deleted"
+
+      # ── Summary ──────────────────────────────────────────────────────────────
+      - name: Show training summary
+        if: always()
+        run: |
+          echo ""
+          echo "══════════════════════════════════════════════════════════════════"
+          echo "  FL Training Summary — run-id: ${RUN_ID}"
+          echo "══════════════════════════════════════════════════════════════════"
+          echo ""
+          echo "  Strategy  : ${FL_STRATEGY}"
+          echo "  Rounds    : ${NUM_ROUNDS}"
+          echo "  Clients   : 3 hospitals (separate pods)"
+          echo "  Local eps : ${NUM_LOCAL_EPOCHS} per round"
+          echo ""
+          echo "  Jobs:"
+          kubectl get jobs -l "run-id=${RUN_ID}" -n "$NAMESPACE" 2>/dev/null || true
+          echo ""
+          echo "  View results in MLflow:"
+          echo "    kubectl port-forward -n mlops svc/mlflow-server 5000:5000"
+          echo "    open http://localhost:5000"
+          echo "    → Experiment: federated-stroke-prediction"
+          echo ""
+          echo "  Download global model from S3:"
+          echo "    aws s3 ls s3://fl-demo-models/global-model/ --recursive"
+          echo "══════════════════════════════════════════════════════════════════"

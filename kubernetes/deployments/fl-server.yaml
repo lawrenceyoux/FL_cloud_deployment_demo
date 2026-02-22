@@ -1,0 +1,133 @@
+# kubernetes/deployments/fl-server.yaml
+#
+# FL Server: Kubernetes Job (exits cleanly after all rounds) + a fixed-name
+# ClusterIP Service so hospital clients can always reach it as "fl-server:8080".
+#
+# Template variables substituted by the fl-train-eks.yml workflow:
+#   FL_IMAGE        — ECR image URI
+#   RUN_ID          — short git SHA (used to name the Job and tag the pod)
+#   NUM_ROUNDS      — total FL rounds (default: 10)
+#   MIN_CLIENTS     — clients required per round (default: 3)
+#   FL_STRATEGY     — fedavg | fedprox (default: fedavg)
+#   NUM_LOCAL_EPOCHS — local epochs per round sent to clients (default: 5)
+#
+# Manual apply (after exporting the vars):
+#   envsubst < kubernetes/deployments/fl-server.yaml | kubectl apply -f -
+#
+# The Service uses selector run-id: "${RUN_ID}" so each workflow run gets
+# its own isolated server pod while reusing the well-known service DNS name.
+---
+# ── Kubernetes Job: runs the Flower server, exits after all rounds ────────────
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fl-server-${RUN_ID}
+  namespace: federated-learning
+  labels:
+    app: fl-server
+    run-id: "${RUN_ID}"
+spec:
+  backoffLimit: 0               # do not retry on failure — surface the error
+  ttlSecondsAfterFinished: 600  # auto-delete 10 min after completion
+  template:
+    metadata:
+      labels:
+        app: fl-server
+        run-id: "${RUN_ID}"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: mlflow-sa  # has IRSA or explicit creds for S3 upload
+
+      containers:
+      - name: fl-server
+        image: ${FL_IMAGE}
+        imagePullPolicy: Always
+        command: ["python", "-m", "src.federated.server"]
+        ports:
+        - name: grpc
+          containerPort: 8080
+
+        env:
+        # ── FL training config ────────────────────────────────────────
+        - name: NUM_ROUNDS
+          value: "${NUM_ROUNDS}"
+        - name: MIN_CLIENTS
+          value: "${MIN_CLIENTS}"
+        - name: STRATEGY
+          value: "${FL_STRATEGY}"
+        # Tell each client how many local epochs to run per round
+        - name: NUM_LOCAL_EPOCHS
+          value: "${NUM_LOCAL_EPOCHS}"
+
+        # ── MLflow tracking (from ConfigMap) ─────────────────────────
+        - name: MLFLOW_TRACKING_URI
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: MLFLOW_TRACKING_URI
+
+        # ── S3 global-model upload (from ConfigMap + Secret) ─────────
+        - name: USE_S3_ARTIFACTS
+          value: "1"
+        - name: S3_MODEL_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: S3_MODEL_BUCKET
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: AWS_REGION
+        # IRSA is preferred (annotate mlflow-sa with role ARN).
+        # Fallback for demo: explicit creds injected from aws-fl-creds Secret.
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-fl-creds
+              key: AWS_ACCESS_KEY_ID
+              optional: true   # omit if using IRSA
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-fl-creds
+              key: AWS_SECRET_ACCESS_KEY
+              optional: true   # omit if using IRSA
+
+        # ── Feature dimension (must match preprocessing output) ───────
+        - name: INPUT_DIM
+          value: "20"
+
+        # ── Misc ─────────────────────────────────────────────────────
+        - name: GIT_PYTHON_REFRESH
+          value: "quiet"
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+
+---
+# ── ClusterIP Service — fixed DNS name used by all hospital clients ───────────
+# Selector targets the Job pod by its run-id label so concurrent runs
+# stay isolated (workflow deletes+recreates service on each run).
+apiVersion: v1
+kind: Service
+metadata:
+  name: fl-server
+  namespace: federated-learning
+  labels:
+    app: fl-server
+spec:
+  type: ClusterIP
+  selector:
+    app: fl-server
+    run-id: "${RUN_ID}"
+  ports:
+  - name: grpc
+    port: 8080
+    targetPort: 8080
+    protocol: TCP

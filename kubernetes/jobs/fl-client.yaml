@@ -1,0 +1,108 @@
+# kubernetes/jobs/fl-client.yaml
+#
+# FL Client Job template — one Job per hospital.
+# The workflow applies this template three times with HOSPITAL_ID = 1, 2, 3.
+# Each Job runs on its own pod, connects to the fl-server Service, and trains
+# on its local hospital data for NUM_ROUNDS rounds.
+#
+# Template variables substituted by the fl-train-eks.yml workflow:
+#   FL_IMAGE      — ECR image URI
+#   RUN_ID        — short git SHA (makes Job names unique per workflow run)
+#   HOSPITAL_ID   — 1 | 2 | 3
+#
+# Manual apply example (Hospital 1):
+#   export FL_IMAGE=<ecr-uri>  RUN_ID=manual  HOSPITAL_ID=1
+#   envsubst < kubernetes/jobs/fl-client.yaml | kubectl apply -f -
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fl-client-h${HOSPITAL_ID}-${RUN_ID}
+  namespace: federated-learning
+  labels:
+    app: fl-client
+    hospital-id: "${HOSPITAL_ID}"
+    run-id: "${RUN_ID}"
+spec:
+  # Retry up to 2 times on transient connection errors (server not ready yet)
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600  # auto-delete 10 min after completion
+  template:
+    metadata:
+      labels:
+        app: fl-client
+        hospital-id: "${HOSPITAL_ID}"
+        run-id: "${RUN_ID}"
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: mlflow-sa
+
+      containers:
+      - name: fl-client
+        image: ${FL_IMAGE}
+        imagePullPolicy: Always
+        command: ["python", "-m", "src.federated.client"]
+
+        env:
+        # ── Hospital identity ─────────────────────────────────────────
+        - name: HOSPITAL_ID
+          value: "${HOSPITAL_ID}"
+
+        # ── FL server address (fixed service DNS name) ────────────────
+        - name: SERVER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: SERVER_ADDRESS
+
+        # ── MLflow tracking ───────────────────────────────────────────
+        - name: MLFLOW_TRACKING_URI
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: MLFLOW_TRACKING_URI
+
+        # ── AWS region (for any client-side S3 reads if USE_S3=1) ─────
+        - name: AWS_REGION
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: AWS_REGION
+
+        # ── Optional explicit AWS creds (falls back to IRSA) ─────────
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: aws-fl-creds
+              key: AWS_ACCESS_KEY_ID
+              optional: true
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: aws-fl-creds
+              key: AWS_SECRET_ACCESS_KEY
+              optional: true
+
+        # ── Training hyperparameters ──────────────────────────────────
+        - name: LOCAL_EPOCHS
+          value: "5"
+        - name: BATCH_SIZE
+          value: "32"
+        - name: LEARNING_RATE
+          value: "0.001"
+
+        # ── Data source: embedded in image (0) or S3 (1) ─────────────
+        - name: USE_S3
+          value: "0"
+
+        # ── Misc ──────────────────────────────────────────────────────
+        - name: GIT_PYTHON_REFRESH
+          value: "quiet"
+
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"

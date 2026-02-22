@@ -13,6 +13,10 @@ Environment variables:
   MLFLOW_TRACKING_URI    — MLflow server URI (default: ./mlruns for local runs)
   STRATEGY               — fedavg | fedprox (default: fedavg)
   FEDPROX_MU             — proximal term for FedProx (default: 0.01)
+  USE_S3_ARTIFACTS       — set "1" to upload final global model to S3 (default: 0)
+  S3_MODEL_BUCKET        — S3 bucket name for global model (e.g. fl-demo-models)
+  INPUT_DIM              — feature dimension for model reconstruction (default: 20)
+  AWS_REGION             — AWS region for S3 upload (default: us-east-1)
 
 Usage (Docker / K8s):
   python -m src.federated.server
@@ -24,7 +28,8 @@ Usage (local test via src/):
 from __future__ import annotations
 
 import os
-from datetime import datetime
+import tempfile
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 import flwr as fl
@@ -42,6 +47,7 @@ SERVER_PORT   = os.environ.get("SERVER_PORT", "8080")
 MLFLOW_URI    = os.environ.get("MLFLOW_TRACKING_URI", "./mlruns")
 STRATEGY_NAME = os.environ.get("STRATEGY", "fedavg")
 FEDPROX_MU    = float(os.environ.get("FEDPROX_MU", "0.01"))
+INPUT_DIM     = int(os.environ.get("INPUT_DIM", "20"))
 
 SERVER_ADDRESS = f"{SERVER_HOST}:{SERVER_PORT}"
 
@@ -67,9 +73,37 @@ def weighted_average(metrics: List[Tuple[int, Dict]]) -> Dict:
 
 
 # ---------------------------------------------------------------------------
+# Strategy with parameter capture
+# Wraps FedAvg/FedProx to store the last aggregated numpy arrays so the
+# server can save the final global model to S3 after training completes.
+# ---------------------------------------------------------------------------
+class _CaptureFinalParams:
+    """Mixin: captures aggregated params from the last completed round."""
+
+    final_params: Optional[List[np.ndarray]] = None
+
+    def aggregate_fit(self, server_round, results, failures):
+        aggregated = super().aggregate_fit(server_round, results, failures)  # type: ignore[misc]
+        if aggregated[0] is not None:
+            self.final_params = fl.common.parameters_to_ndarrays(aggregated[0])
+            print(f"[server] Round {server_round}: aggregated {len(self.final_params)} param tensors")
+        return aggregated
+
+
+class FedAvgCapture(_CaptureFinalParams, fl.server.strategy.FedAvg):
+    """FedAvg that retains the final global-model parameters."""
+    pass
+
+
+class FedProxCapture(_CaptureFinalParams, fl.server.strategy.FedProx):
+    """FedProx that retains the final global-model parameters."""
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Strategy factory
 # ---------------------------------------------------------------------------
-def make_strategy(name: str) -> fl.server.strategy.Strategy:
+def make_strategy(name: str) -> _CaptureFinalParams:
     common = dict(
         fraction_fit=1.0,
         fraction_evaluate=1.0,
@@ -80,9 +114,59 @@ def make_strategy(name: str) -> fl.server.strategy.Strategy:
         fit_metrics_aggregation_fn=weighted_average,
     )
     if name == "fedprox":
-        return fl.server.strategy.FedProx(proximal_mu=FEDPROX_MU, **common)
-    # default: FedAvg
-    return fl.server.strategy.FedAvg(**common)
+        return FedProxCapture(proximal_mu=FEDPROX_MU, **common)
+    return FedAvgCapture(**common)
+
+
+# ---------------------------------------------------------------------------
+# S3 global-model upload
+# Called after start_server() returns.  Reconstructs the StrokeNet from the
+# captured numpy parameter arrays and uploads the state_dict as model.pt.
+# ---------------------------------------------------------------------------
+def _upload_global_model_to_s3(
+    params_ndarrays: List[np.ndarray],
+    run_name: str,
+    input_dim: int,
+) -> None:
+    """Upload the final global model weights to S3.
+
+    Non-fatal: prints a clear warning if upload fails so the GHA step can
+    detect it (the training result is already safe in MLflow).
+    """
+    if os.environ.get("USE_S3_ARTIFACTS", "0") != "1":
+        print("[server] USE_S3_ARTIFACTS is not '1' — skipping S3 upload")
+        return
+    bucket = os.environ.get("S3_MODEL_BUCKET", "")
+    if not bucket:
+        print("⚠️  USE_S3_ARTIFACTS=1 but S3_MODEL_BUCKET not set — skipping S3 upload")
+        return
+    try:
+        import boto3
+        import torch
+        from src.models.stroke_classifier import StrokeNet
+        from src.models.stroke_classifier import set_parameters as sp
+
+        model = StrokeNet(input_dim)
+        sp(model, params_ndarrays)
+
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        s3_client = boto3.client("s3", region_name=region)
+        ts  = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        key = f"global-model/{run_name}/{ts}/model.pt"
+
+        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as tmp:
+            torch.save(model.state_dict(), tmp.name)
+            s3_client.upload_file(tmp.name, bucket, key)
+
+        s3_uri = f"s3://{bucket}/{key}"
+        print(f"✅ Global FL model uploaded → {s3_uri}")
+        # Surface the URI in MLflow so it is discoverable from the UI
+        mlflow.log_param("s3_global_model_uri", s3_uri)
+
+    except Exception as exc:
+        # Print clearly so the GHA workflow step can grep for the failure
+        print(f"❌ S3 global-model upload FAILED: {exc}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +176,7 @@ def main() -> None:
     mlflow.set_tracking_uri(MLFLOW_URI)
     mlflow.set_experiment("federated-stroke-prediction")
 
-    strategy = make_strategy(STRATEGY_NAME)
+    strategy  = make_strategy(STRATEGY_NAME)
     run_name  = f"fl_{STRATEGY_NAME}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
 
     print(
@@ -115,7 +199,7 @@ def main() -> None:
             strategy=strategy,
         )
 
-        # Log round-level metrics to MLflow
+        # ── Log per-round metrics to MLflow ──────────────────────────
         for rnd, metrics_list in history.metrics_distributed.items():
             round_metrics = {}
             for key, value_list in metrics_list:
@@ -123,13 +207,19 @@ def main() -> None:
             if round_metrics:
                 mlflow.log_metrics(round_metrics, step=rnd)
 
-        # Log final aggregated accuracy if available
+        # ── Print final round summary ────────────────────────────────
         if history.metrics_distributed_fit:
             last_round   = max(history.metrics_distributed_fit.keys())
             final_metric = history.metrics_distributed_fit[last_round]
             print(f"Final round {last_round} metrics: {final_metric}")
 
-    print("FL training complete.")
+        # ── Upload final global model to S3 ─────────────────────────
+        if strategy.final_params is not None:
+            _upload_global_model_to_s3(strategy.final_params, run_name, INPUT_DIM)
+        else:
+            print("⚠️  No aggregated parameters captured — S3 upload skipped")
+
+    print("FL server finished all rounds.")
 
 
 if __name__ == "__main__":

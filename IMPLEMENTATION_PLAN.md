@@ -2082,235 +2082,149 @@ kubectl delete pod test-s3-access -n federated-learning
 
 ## Day 21-23: Kubernetes Deployment
 
-### 4.4 Deploy FL Components to EKS
-**Time**: 10 hours
+### 4.4 Deploy FL Components to EKS — GitHub Actions Workflow
+**Time**: 4 hours
 
-**Steps**:
+> **Status**: Manifests and workflow implemented.
+> Trigger: **Actions → FL Training — Full Federated (EKS) → Run workflow**
 
-1. **Server Deployment** (`kubernetes/deployments/fl-server.yaml`)
-   ```yaml
-   apiVersion: apps/v1
-   kind: Deployment
-   metadata:
-     name: fl-server
-     namespace: federated-learning
-   spec:
-     replicas: 1
-     selector:
-       matchLabels:
-         app: fl-server
-     template:
-       metadata:
-         labels:
-           app: fl-server
-       spec:
-         containers:
-         - name: fl-server
-           image: <account>.dkr.ecr.us-east-1.amazonaws.com/fl-server:v1.0
-           ports:
-           - containerPort: 8080
-             name: grpc
-           env:
-           - name: NUM_ROUNDS
-             valueFrom:
-               configMapKeyRef:
-                 name: fl-config
-                 key: NUM_ROUNDS
-           - name: MLFLOW_TRACKING_URI
-             valueFrom:
-               configMapKeyRef:
-                 name: fl-config
-                 key: MLFLOW_TRACKING_URI
-           - name: AWS_REGION
-             value: "us-east-1"
-           resources:
-             requests:
-               memory: "4Gi"
-               cpu: "2"
-             limits:
-               memory: "8Gi"
-               cpu: "4"
-   ---
-   apiVersion: v1
-   kind: Service
-   metadata:
-     name: fl-server
-     namespace: federated-learning
-   spec:
-     selector:
-       app: fl-server
-     ports:
-     - protocol: TCP
-       port: 8080
-       targetPort: 8080
-     type: ClusterIP
-   ```
+---
 
-2. **Client Deployments** (`kubernetes/deployments/fl-clients.yaml`)
-   ```yaml
-   # Hospital 1 Client
-   apiVersion: apps/v1
-   kind: Deployment
-   metadata:
-     name: fl-client-hospital-1
-     namespace: federated-learning
-   spec:
-     replicas: 1
-     selector:
-       matchLabels:
-         app: fl-client
-         hospital: hospital-1
-     template:
-       metadata:
-         labels:
-           app: fl-client
-           hospital: hospital-1
-       spec:
-         serviceAccountName: fl-client-sa  # For S3 access via IRSA
-         containers:
-         - name: fl-client
-           image: <account>.dkr.ecr.us-east-1.amazonaws.com/fl-client:v1.0
-           env:
-           - name: HOSPITAL_ID
-             value: "hospital-1"
-           - name: DATA_PATH
-             value: "s3://fl-demo-data-hospital-1/"
-           - name: SERVER_ADDRESS
-             value: "fl-server:8080"
-           - name: AWS_REGION
-             value: "us-east-1"
-           resources:
-             requests:
-               memory: "2Gi"
-               cpu: "1"
-             limits:
-               memory: "4Gi"
-               cpu: "2"
-   ---
-   # Hospital 2 Client
-   apiVersion: apps/v1
-   kind: Deployment
-   metadata:
-     name: fl-client-hospital-2
-     namespace: federated-learning
-   spec:
-     replicas: 1
-     selector:
-       matchLabels:
-         app: fl-client
-         hospital: hospital-2
-     template:
-       metadata:
-         labels:
-           app: fl-client
-           hospital: hospital-2
-       spec:
-         serviceAccountName: fl-client-sa
-         containers:
-         - name: fl-client
-           image: <account>.dkr.ecr.us-east-1.amazonaws.com/fl-client:v1.0
-           env:
-           - name: HOSPITAL_ID
-             value: "hospital-2"
-           - name: DATA_PATH
-             value: "s3://fl-demo-data-hospital-2/"
-           - name: SERVER_ADDRESS
-             value: "fl-server:8080"
-           resources:
-             requests:
-               memory: "2Gi"
-               cpu: "1"
-             limits:
-               memory: "4Gi"
-               cpu: "2"
-   ---
-   # Hospital 3 Client
-   apiVersion: apps/v1
-   kind: Deployment
-   metadata:
-     name: fl-client-hospital-3
-     namespace: federated-learning
-   spec:
-     replicas: 1
-     selector:
-       matchLabels:
-         app: fl-client
-         hospital: hospital-3
-     template:
-       metadata:
-         labels:
-           app: fl-client
-           hospital: hospital-3
-       spec:
-         serviceAccountName: fl-client-sa
-         containers:
-         - name: fl-client
-           image: <account>.dkr.ecr.us-east-1.amazonaws.com/fl-client:v1.0
-           env:
-           - name: HOSPITAL_ID
-             value: "hospital-3"
-           - name: DATA_PATH
-             value: "s3://fl-demo-data-hospital-3/"
-           - name: SERVER_ADDRESS
-             value: "fl-server:8080"
-           resources:
-             requests:
-               memory: "2Gi"
-               cpu: "1"
-             limits:
-               memory: "4Gi"
-               cpu: "2"
-   ```
+#### Architecture on EKS
 
-3. **Service Account for S3 Access** (`kubernetes/rbac/service-account.yaml`)
-   ```yaml
-   apiVersion: v1
-   kind: ServiceAccount
-   metadata:
-     name: fl-client-sa
-     namespace: federated-learning
-     annotations:
-       eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/fl-client-s3-role
-   ```
+```
+GitHub Actions Workflow (fl-train-eks.yml)
+         │
+         ▼
+  ┌──────────────┐   ClusterIP Service
+  │  fl-server   │   "fl-server:8080"      Raw patient data
+  │  Job pod     │◄────────────────────    NEVER leaves the pod;
+  │              │                         only gradient updates
+  │  Flower +    │   ┌─────────────────┐   cross the network.
+  │  FedAvg/     │◄──│ fl-client-h1    │
+  │  FedProx     │◄──│ fl-client-h2    │
+  │              │◄──│ fl-client-h3    │
+  │  saves final │   └─────────────────┘
+  │  model → S3  │   3 Jobs, each on its own pod
+  └──────────────┘   running src.federated.client
+```
 
-4. **Deploy All Components**
-   ```bash
-   # Apply configurations
-   kubectl apply -f kubernetes/configmaps/
-   kubectl apply -f kubernetes/rbac/
-   kubectl apply -f kubernetes/deployments/fl-server.yaml
-   kubectl apply -f kubernetes/deployments/fl-clients.yaml
-   
-   # Verify deployments
-   kubectl get pods -n federated-learning
-   
-   # Expected output:
-   # NAME                                      READY   STATUS    RESTARTS   AGE
-   # fl-server-xxx                             1/1     Running   0          1m
-   # fl-client-hospital-1-xxx                  1/1     Running   0          1m
-   # fl-client-hospital-2-xxx                  1/1     Running   0          1m
-   # fl-client-hospital-3-xxx                  1/1     Running   0          1m
-   
-   # Check logs
-   kubectl logs -f -n federated-learning deployment/fl-server
-   kubectl logs -f -n federated-learning deployment/fl-client-hospital-1
-   ```
+**Why a Job (not a Deployment) for the server?**  
+The Flower server exits cleanly after all rounds complete — it is a batch process, not a
+long-running service. Using a `batch/v1 Job` for both the server and clients means
+Kubernetes tracks completion status natively, allowing the workflow to call
+`kubectl wait --for=condition=complete`. A fixed-name `ClusterIP Service` routes
+client connections to the correct server pod using the `run-id` label selector.
 
-5. **Start Federated Training**
-   ```bash
-   # Training starts automatically when all clients connect
-   # Monitor progress in server logs
-   
-   # Or trigger manually via API
-   kubectl exec -it -n federated-learning deployment/fl-server -- \
-     python -m src.federated.trigger_training --num_rounds 50
-   ```
+**Why separate pods per hospital?**  
+This mirrors real-world FL: each hospital's data lives on that hospital's infrastructure
+(here, baked into its container or in its S3 bucket). Separate pods provide process
+isolation — Hospital 1's training loop cannot access Hospital 2's data even if they
+share the same cluster.
+
+---
+
+#### Files
+
+| File | Purpose |
+|------|---------|
+| `kubernetes/deployments/fl-server.yaml` | FL server Job + ClusterIP Service (template) |
+| `kubernetes/jobs/fl-client.yaml` | Hospital client Job template (HOSPITAL_ID=1/2/3) |
+| `kubernetes/jobs/train-baseline.yaml` | Existing centralized baseline Job |
+| `.github/workflows/fl-train-eks.yml` | **New**: Full FL training workflow |
+| `src/federated/server.py` | Flower server with `FedAvgCapture` — saves final model to S3 |
+
+---
+
+#### Workflow: fl-train-eks.yml
+
+Two jobs, sequential:
+
+```
+build-push  ──►  run-fl-training
+    │                  │
+ECR image         1. apply fl-server Job + Service
+                  2. wait for server pod Running
+                  3. apply fl-client-h1, h2, h3 Jobs (parallel)
+                  4. stream server logs
+                  5. wait for all 3 clients complete
+                  6. wait for server Job complete
+                  7. verify s3://fl-demo-models/global-model/
+                  8. print summary
+```
+
+**How to trigger**:
+1. Go to **Actions → FL Training — Full Federated (EKS) → Run workflow**
+2. Set `num_rounds`, `fl_strategy` (fedavg or fedprox), `num_local_epochs`
+3. Click **Run workflow**
+
+**Watch training progress** (while the workflow runs):
+```bash
+# Stream server logs — shows round-by-round aggregation
+kubectl logs -f -l "app=fl-server" -n federated-learning
+
+# Stream individual hospital logs (open 3 terminals)
+kubectl logs -f -l "hospital-id=1" -n federated-learning
+kubectl logs -f -l "hospital-id=2" -n federated-learning
+kubectl logs -f -l "hospital-id=3" -n federated-learning
+
+# See all pods at a glance
+kubectl get pods -n federated-learning -w
+```
+
+**Expected pod list during training**:
+```
+NAME                             READY   STATUS    AGE
+fl-server-abc1234-xxx            1/1     Running   45s   ← aggregates
+fl-client-h1-abc1234-xxx         1/1     Running   20s   ← Hospital 1
+fl-client-h2-abc1234-xxx         1/1     Running   20s   ← Hospital 2
+fl-client-h3-abc1234-xxx         1/1     Running   20s   ← Hospital 3
+mlflow-server-0  (mlops ns)      1/1     Running   ...
+```
+
+---
+
+#### S3 model upload — how it works
+
+`src/federated/server.py` uses a `FedAvgCapture` strategy (a thin subclass of
+`fl.server.strategy.FedAvg`) that overrides `aggregate_fit` to capture the final
+aggregated numpy parameter arrays. After `fl.server.start_server()` returns, the
+server reconstructs `StrokeNet` from those arrays and uploads `model.pt` to:
+
+```
+s3://fl-demo-models/global-model/<run_name>/<UTC-timestamp>/model.pt
+```
+
+The S3 URI is also logged as `s3_global_model_uri` in the MLflow run so it is
+discoverable from the MLflow UI.
+
+**Demo vs production credential pattern**:
+- **Demo**: `aws-fl-creds` K8s Secret created by the workflow from GHA secrets, mounted
+  as env vars. Secret is deleted after the run (see `if: always()` cleanup step).
+- **Production**: Annotate `mlflow-sa` ServiceAccount with an IRSA role ARN. Then
+  remove the secret creation/cleanup steps from the workflow entirely.
+
+---
+
+#### Verify after run
+
+```bash
+# Check global model in S3
+aws s3 ls s3://fl-demo-models/global-model/ --recursive
+
+# View all FL runs in MLflow
+kubectl port-forward -n mlops svc/mlflow-server 5000:5000
+open http://localhost:5000  # → experiment: federated-stroke-prediction
+```
 
 **Deliverables**:
-- ✅ FL server deployed on EKS
-- ✅ 3 FL clients deployed
-- ✅ Service account with S3 access
-- ✅ All pods running successfully
+- ✅ `kubernetes/deployments/fl-server.yaml` — server Job + Service manifest
+- ✅ `kubernetes/jobs/fl-client.yaml` — per-hospital client Job template
+- ✅ `.github/workflows/fl-train-eks.yml` — full FL orchestration workflow
+- ✅ `src/federated/server.py` — `FedAvgCapture` strategy saves final model to S3
+- ✅ One-button FL training: 1 server pod + 3 client pods, each on separate EKS nodes
+- ✅ Global model artifact in `s3://fl-demo-models/global-model/`
+- ✅ Per-round metrics in MLflow (`federated-stroke-prediction` experiment)
 
 ---
 

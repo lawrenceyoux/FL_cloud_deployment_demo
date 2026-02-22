@@ -250,6 +250,18 @@ jobs:
           kubectl apply -f kubernetes/namespaces/fl-namespace.yaml
           echo "✅ Namespace + mlflow-sa ServiceAccount applied (idempotent)"
 
+      - name: Create aws-fl-creds Secret (enables S3 model upload)
+        # Injects the GHA AWS credentials into the training pod as a K8s Secret.
+        # This is the simplest demo pattern. In production: use IRSA instead
+        # (annotate mlflow-sa with role ARN and remove this step).
+        run: |
+          kubectl delete secret aws-fl-creds -n "$NAMESPACE" --ignore-not-found=true
+          kubectl create secret generic aws-fl-creds \
+            --namespace "$NAMESPACE" \
+            --from-literal=AWS_ACCESS_KEY_ID="${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            --from-literal=AWS_SECRET_ACCESS_KEY="${{ secrets.AWS_SECRET_ACCESS_KEY }}"
+          echo "✅ aws-fl-creds secret created (use IRSA in production)"
+
       - name: Delete previous Job with same run-id (if any)
         run: |
           kubectl delete job "train-baseline-${RUN_ID}" \
@@ -392,6 +404,30 @@ jobs:
             echo "❌ Job failed — see logs above"
             exit 1
           fi
+
+      - name: Verify model uploaded to S3
+        run: |
+          BUCKET=$(kubectl get configmap fl-config -n "$NAMESPACE" \
+                     -o jsonpath='{.data.S3_MODEL_BUCKET}' 2>/dev/null \
+                   || echo "fl-demo-models")
+          echo "Checking s3://${BUCKET}/baseline/ for uploaded model…"
+          aws s3 ls "s3://${BUCKET}/baseline/" --recursive 2>/dev/null | tail -5 || true
+
+          COUNT=$(aws s3 ls "s3://${BUCKET}/baseline/" --recursive 2>/dev/null | \
+                    grep "model.pt" | wc -l || echo "0")
+          if [ "$COUNT" -gt 0 ]; then
+            echo "✅ Baseline model found in S3 (${COUNT} version(s))"
+          else
+            echo "⚠️  No model.pt found under s3://${BUCKET}/baseline/"
+            echo "   Training succeeded (MLflow has the run). Check server logs above"
+            echo "   for a line starting with '\u26a0\ufe0f  S3 upload failed' to debug."
+          fi
+
+      - name: Clean up credentials Secret
+        if: always()
+        run: |
+          kubectl delete secret aws-fl-creds -n "$NAMESPACE" --ignore-not-found=true
+          echo "✅ aws-fl-creds secret deleted"
 
       - name: Show final job status
         if: always()
