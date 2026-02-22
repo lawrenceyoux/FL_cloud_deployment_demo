@@ -43,7 +43,7 @@ spec:
               key: password
       containers:
       - name: mlflow
-        image: ghcr.io/mlflow/mlflow:latest
+        image: ghcr.io/mlflow/mlflow:v2.22.0
         ports:
         - containerPort: 5000
           name: http
@@ -82,7 +82,7 @@ spec:
             cpu: "1"
         livenessProbe:
           httpGet:
-            #path: /health
+            path: /health
             port: 5000
           initialDelaySeconds: 60
           periodSeconds: 30
