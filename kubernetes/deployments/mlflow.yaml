@@ -1,3 +1,13 @@
+# ServiceAccount must exist before the StatefulSet so the pod can be scheduled.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mlflow-sa
+  namespace: mlops
+  annotations:
+    # Replace <account-id> and <region> after Terraform apply outputs the role ARN
+    eks.amazonaws.com/role-arn: "arn:aws:iam::<account-id>:role/fl-demo-mlflow-irsa"
+---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -103,14 +113,4 @@ spec:
   # ClusterIP so FL clients in the cluster reach it via DNS.
   # For browser access use: kubectl port-forward -n mlops svc/mlflow-server 5000:5000
   type: ClusterIP
----
-# ServiceAccount for IRSA — Terraform's OIDC provider binds this to an IAM role
-# that has s3:GetObject/PutObject on fl-demo-mlflow bucket.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: mlflow-sa
-  namespace: mlops
-  annotations:
-    # Replace <account-id> and <region> after Terraform apply outputs the role ARN
-    eks.amazonaws.com/role-arn: "arn:aws:iam::<account-id>:role/fl-demo-mlflow-irsa"
+
