@@ -105,6 +105,17 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
+      - name: Import existing access entry (if exists)
+        if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
+        continue-on-error: true
+        run: |
+          CLUSTER_NAME="fl-demo-cluster"
+          CALLER_ARN=$(aws sts get-caller-identity --query Arn --output text)
+          echo "Attempting to import access entry for: $CALLER_ARN"
+          terraform import \
+            'module.eks.aws_eks_access_entry.this["cluster_creator"]' \
+            "$CLUSTER_NAME#$CALLER_ARN" || true
+
       - name: Terraform Plan
         if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
         run: terraform plan -out=tfplan

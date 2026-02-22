@@ -33,7 +33,7 @@ module "eks" {
     training = {
       instance_types = ["t3.medium"]
       min_size       = 1
-      max_size       = 2
+      max_size       = 3  # Increased to allow scaling for parallel FL training
       desired_size   = 2
 
       labels = { role = "training" }
