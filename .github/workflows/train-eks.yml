@@ -92,19 +92,41 @@ jobs:
       - name: Compute image URI
         id: ecr
         run: |
-          # Resolve the account ID and construct the full ECR image URI.
-          # This is done in its own step so the output is written to
-          # $GITHUB_OUTPUT unconditionally — before docker login, which is a
-          # separate network call that could fail and would otherwise abort the
-          # script before the echo, leaving image_uri empty in the next job.
+          set -e
+
           ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          if [ -z "$ACCOUNT" ]; then
+            echo "❌ Failed to resolve AWS account ID — check AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets"
+            exit 1
+          fi
+
           REGION="${{ secrets.AWS_REGION }}"
+          if [ -z "$REGION" ]; then
+            echo "❌ AWS_REGION secret is not set — add it in Repo → Settings → Secrets → Actions"
+            exit 1
+          fi
+
           REGISTRY="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
           IMAGE_URI="${REGISTRY}/${ECR_REPO}:${{ steps.run_id.outputs.run_id }}"
 
           echo "image_uri=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
           echo "registry=${REGISTRY}"  >> "$GITHUB_OUTPUT"
           echo "Image URI: ${IMAGE_URI}"
+
+      - name: Debug — verify image_uri output
+        run: |
+          echo "──── build-push step outputs ─────────────────────────────"
+          echo "steps.ecr.outputs.image_uri : '${{ steps.ecr.outputs.image_uri }}'"
+          echo "steps.ecr.outputs.registry  : '${{ steps.ecr.outputs.registry }}'"
+          echo "steps.run_id.outputs.run_id : '${{ steps.run_id.outputs.run_id }}'"
+          echo "GITHUB_SHA (raw)            : '${GITHUB_SHA}'"
+          echo "secrets.AWS_REGION set?     : '${{ secrets.AWS_REGION != '' && 'YES' || 'NO (EMPTY SECRET)' }}'"
+          echo "──────────────────────────────────────────────────────────"
+          if [ -z "${{ steps.ecr.outputs.image_uri }}" ]; then
+            echo "❌ image_uri is empty — Compute image URI step did not write to GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "✅ image_uri looks good, proceeding to docker login"
 
       - name: Login to Amazon ECR
         run: |
@@ -142,6 +164,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Debug — inspect values received from build-push
+        run: |
+          echo "──── run-on-eks received values ──────────────────────────"
+          echo "FL_IMAGE     : '${FL_IMAGE}'"
+          echo "RUN_ID       : '${RUN_ID}'"
+          echo "TRAIN_EPOCHS : '${TRAIN_EPOCHS}'"
+          echo "TRAIN_MODEL  : '${TRAIN_MODEL}'"
+          echo "TRAIN_LOSS   : '${TRAIN_LOSS}'"
+          echo "──────────────────────────────────────────────────────────"
+          MISSING=""
+          [ -z "${FL_IMAGE}" ]     && MISSING="${MISSING} FL_IMAGE"
+          [ -z "${RUN_ID}" ]       && MISSING="${MISSING} RUN_ID"
+          [ -z "${TRAIN_EPOCHS}" ] && MISSING="${MISSING} TRAIN_EPOCHS"
+          [ -z "${TRAIN_MODEL}" ]  && MISSING="${MISSING} TRAIN_MODEL"
+          [ -z "${TRAIN_LOSS}" ]   && MISSING="${MISSING} TRAIN_LOSS"
+          if [ -n "${MISSING}" ]; then
+            echo "❌ The following env vars are empty:${MISSING}"
+            echo "   FL_IMAGE / RUN_ID come from build-push job outputs."
+            echo "   TRAIN_* come from workflow_dispatch inputs (check defaults)."
+            exit 1
+          fi
+          echo "✅ All required values are present"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
