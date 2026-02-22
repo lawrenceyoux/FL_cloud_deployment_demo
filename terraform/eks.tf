@@ -3,7 +3,7 @@ module "eks" {
   version = "~> 20.0"
 
   cluster_name    = var.cluster_name
-  cluster_version = "1.29"
+  cluster_version = "1.30"
 
   # Allow the CI/CD runner and current caller to manage the cluster
   cluster_endpoint_public_access = true
@@ -26,8 +26,14 @@ module "eks" {
     system = {
       instance_types = ["t3.medium"]
       min_size       = 1
-      max_size       = 2
-      desired_size   = 2
+      max_size       = 3
+      desired_size   = 1
+
+      # Nodes must be in private subnets only; they reach the internet via the
+      # NAT gateway so map_public_ip_on_launch is not required (and private
+      # subnets don't have it set, which caused CREATE_FAILED when the cluster-
+      # level subnet_ids included public subnets).
+      subnet_ids = module.vpc.private_subnets
 
       labels = { role = "system" }
     }
@@ -37,6 +43,9 @@ module "eks" {
       min_size       = 1
       max_size       = 3  # Increased to allow scaling for parallel FL training
       desired_size   = 2
+
+      # Same reasoning as above — private subnets + NAT, no public IP needed.
+      subnet_ids = module.vpc.private_subnets
 
       labels = { role = "training" }
     }
