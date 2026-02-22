@@ -20,11 +20,11 @@
 
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    # Ensure /app is always on sys.path so `from src.xxx import` works
-    # regardless of how the process is launched (python -m, uvicorn, etc.)
-    PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+# Ensure /app is always on sys.path so `from src.xxx import` works
+# regardless of how the process is launched (python -m, uvicorn, etc.)
+ENV PYTHONPATH=/app
 
 WORKDIR /app
 
@@ -45,6 +45,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # ── Source code ──────────────────────────────────────────────────────────────
 COPY src/ ./src/
+COPY setup.py ./
+
+# Install the package so `src.*` imports resolve regardless of cwd or PYTHONPATH.
+# This is belt-and-suspenders alongside PYTHONPATH=/app above.
+RUN pip install --no-cache-dir -e .
 
 # ── Processed hospital data ──────────────────────────────────────────────────
 # Bake the pre-processed CSVs into the image so the training job works
