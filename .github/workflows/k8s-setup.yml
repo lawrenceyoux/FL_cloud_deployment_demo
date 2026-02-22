@@ -124,13 +124,38 @@ jobs:
           echo "Waiting for mlflow-server to be Ready…"
           kubectl rollout status statefulset/mlflow-server -n mlops --timeout=300s
 
+      # ── NGINX Ingress Controller ──────────────────────────────────────────
+      # Creates a LoadBalancer that routes external traffic to services
+      - name: Install NGINX Ingress Controller
+        if: github.event.inputs.skip_addons == 'false'
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/aws/deploy.yaml
+          echo "Waiting for ingress-nginx controller to be Ready…"
+          kubectl wait --namespace ingress-nginx \
+            --for=condition=ready pod \
+            --selector=app.kubernetes.io/component=controller \
+            --timeout=180s
+
+      - name: Apply Ingress resources
+        if: github.event.inputs.skip_addons == 'false'
+        run: |
+          kubectl apply -f kubernetes/ingress.yaml
+          echo "Waiting for LoadBalancer to provision…"
+          sleep 30
+          kubectl get ingress -n mlops
+
       - name: Verify MLflow endpoint
         run: |
           echo "MLflow service:"
           kubectl get svc mlflow-server -n mlops
           echo ""
+          echo "=== Ingress (external access) ==="
+          kubectl get svc -n ingress-nginx | grep LoadBalancer || true
+          kubectl get ingress -n mlops || true
+          echo ""
           echo "To access locally:  kubectl port-forward -n mlops svc/mlflow-server 5000:5000"
           echo "Cluster-internal:   http://mlflow-server.mlops:5000"
+          echo "External access:    Get LoadBalancer DNS from ingress-nginx service above"
 
       # ── Metrics Server ────────────────────────────────────────────────────
       # Lightweight; required for kubectl top nodes/pods and HPA.
@@ -147,6 +172,11 @@ jobs:
         run: |
           helm repo add autoscaler https://kubernetes.github.io/autoscaler
           helm repo update
+          
+          # Clean up any stuck releases before upgrading
+          kubectl delete secret -n kube-system -l name=cluster-autoscaler,status=pending-upgrade 2>/dev/null || true
+          kubectl delete secret -n kube-system -l name=cluster-autoscaler,status=pending-install 2>/dev/null || true
+          
           helm upgrade --install cluster-autoscaler autoscaler/cluster-autoscaler \
             --namespace kube-system \
             --set autoDiscovery.clusterName="$CLUSTER_NAME" \

@@ -104,8 +104,7 @@ spec:
   - name: http
     port: 5000
     targetPort: 5000
-    nodePort: 30500
     protocol: TCP
-  # NodePort exposes on all nodes at port 30500
-  type: NodePort
+  # ClusterIP - traffic routed via Ingress
+  type: ClusterIP
 
