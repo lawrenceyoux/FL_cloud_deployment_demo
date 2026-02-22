@@ -71,8 +71,6 @@ spec:
         - --port
         - "5000"
         - --serve-artifacts
-        - --allowed-hosts
-        - "*"
         resources:
           requests:
             memory: "512Mi"
