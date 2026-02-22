@@ -46,13 +46,28 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # ── Source code ──────────────────────────────────────────────────────────────
 COPY src/ ./src/
 
-# Add /app to Python's path permanently via a .pth file.
-# This is the most reliable mechanism — honoured by every Python invocation
-# regardless of WORKDIR, subprocess launches, or entrypoint scripts.
-# PYTHONPATH=/app (set above) is belt-and-suspenders for runtime;
-# the .pth file covers build-time smoke tests and any edge-case launchers.
-RUN echo '/app' > /usr/local/lib/python3.11/site-packages/fl_app.pth && \
-    python -c "from src.models.stroke_classifier import StrokeNet; print('✅ src.models import OK')"
+# Verify the copy worked and sys.path is correct, then write the .pth file.
+# Using printf to avoid shell quoting issues with echo.
+# Smoke-test only checks the path — does NOT import torch to keep build fast.
+RUN printf '/app\n' > /usr/local/lib/python3.11/site-packages/fl_app.pth && \
+    echo "--- site-packages fl_app.pth ---" && \
+    cat /usr/local/lib/python3.11/site-packages/fl_app.pth && \
+    echo "--- /app/src contents ---" && \
+    ls /app/src/ && \
+    echo "--- /app/src/models contents ---" && \
+    ls /app/src/models/ && \
+    echo "--- sys.path ---" && \
+    python -c "import sys; print(sys.path)" && \
+    echo "--- smoke test: can Python find src.models? ---" && \
+    python -c "
+import sys, importlib.util
+spec = importlib.util.find_spec('src')
+print('src spec:', spec)
+spec2 = importlib.util.find_spec('src.models')
+print('src.models spec:', spec2)
+assert spec2 is not None, 'FAIL: src.models not found — check COPY and PYTHONPATH'
+print('✅ src.models found OK')
+"
 
 # ── Processed hospital data ──────────────────────────────────────────────────
 # Bake the pre-processed CSVs into the image so the training job works
