@@ -127,19 +127,24 @@ def _print_final_chart(
     history: fl.server.history.History,
     num_rounds: int,
     strategy_name: str,
+    strategy: Optional["_CaptureFinalParams"] = None,
 ) -> None:
     """Print a full table + AUC-ROC sparkline chart after all rounds."""
     # Build lookup: metric_name -> {round: value}
-    dist      = history.metrics_distributed
-    fit_dist  = history.metrics_fit
-    acc_map   = dict(dist.get("accuracy",  []))
-    auc_map   = dict(dist.get("auc_roc",   []))
-    aupr_map  = dict(dist.get("auc_pr",    []))
-    f1_map    = dict(dist.get("f1",        []))
-    prec_map  = dict(dist.get("precision", []))
-    rec_map   = dict(dist.get("recall",    []))
-    ns_map    = dict(dist.get("n_samples", []))
-    tl_map    = dict(fit_dist.get("train_loss", []))
+    dist     = history.metrics_distributed
+    acc_map  = dict(dist.get("accuracy",  []))
+    auc_map  = dict(dist.get("auc_roc",   []))
+    aupr_map = dict(dist.get("auc_pr",    []))
+    f1_map   = dict(dist.get("f1",        []))
+    prec_map = dict(dist.get("precision", []))
+    rec_map  = dict(dist.get("recall",    []))
+    ns_map   = dict(dist.get("n_samples", []))
+    # train_loss comes from strategy._round_fit_metrics (not in Flower History)
+    tl_map: Dict[int, float] = {}
+    if strategy is not None:
+        for rnd, m in strategy._round_fit_metrics.items():
+            if "train_loss" in m:
+                tl_map[rnd] = float(m["train_loss"])
     loss_map  = {}
     for rnd, val in history.losses_distributed:
         loss_map[rnd] = val
@@ -376,11 +381,18 @@ def main() -> None:
                     metrics_by_round[rnd] = {}
                 metrics_by_round[rnd][f"distributed_{metric_name}"] = float(value)
 
+        # Also log train_loss (from fit phase — not stored in Flower History)
+        for rnd, fit_m in strategy._round_fit_metrics.items():
+            if "train_loss" in fit_m:
+                if rnd not in metrics_by_round:
+                    metrics_by_round[rnd] = {}
+                metrics_by_round[rnd]["train_loss"] = float(fit_m["train_loss"])
+
         for rnd in sorted(metrics_by_round):
             mlflow.log_metrics(metrics_by_round[rnd], step=rnd)
 
         # ── Print ASCII chart of all rounds ──────────────────────────
-        _print_final_chart(history, NUM_ROUNDS, STRATEGY_NAME)
+        _print_final_chart(history, NUM_ROUNDS, STRATEGY_NAME, strategy=strategy)
 
         # ── Upload final global model to S3 ─────────────────────────
         if strategy.final_params is not None:
