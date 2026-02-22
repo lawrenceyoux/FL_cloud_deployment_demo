@@ -45,13 +45,13 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # ── Source code ──────────────────────────────────────────────────────────────
 COPY src/ ./src/
-COPY setup.py ./
 
-# Belt-and-suspenders: write a .pth file so Python always finds /app on
-# sys.path regardless of PYTHONPATH, editable installs, or entrypoint quirks.
-# This is the most reliable way to ensure `from src.xxx import` always works.
-RUN python -c "import site; open(site.getsitepackages()[0]+'/fl_app.pth','w').write('/app\n')" && \
-    pip install --no-cache-dir -e . && \
+# Add /app to Python's path permanently via a .pth file.
+# This is the most reliable mechanism — honoured by every Python invocation
+# regardless of WORKDIR, subprocess launches, or entrypoint scripts.
+# PYTHONPATH=/app (set above) is belt-and-suspenders for runtime;
+# the .pth file covers build-time smoke tests and any edge-case launchers.
+RUN echo '/app' > /usr/local/lib/python3.11/site-packages/fl_app.pth && \
     python -c "from src.models.stroke_classifier import StrokeNet; print('✅ src.models import OK')"
 
 # ── Processed hospital data ──────────────────────────────────────────────────
