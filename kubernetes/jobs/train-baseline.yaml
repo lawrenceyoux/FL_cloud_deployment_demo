@@ -41,10 +41,10 @@ spec:
         run-id: "${RUN_ID}"
     spec:
       restartPolicy: Never
-      # IRSA service account — gives the pod read access to S3 hospital buckets
-      # and write access to fl-demo-mlflow (for artifact storage).
-      # Created by Terraform; replace <account-id> in mlflow.yaml with the real ARN.
-      serviceAccountName: mlflow-sa
+      # Use the namespace-local default service account for baseline training.
+      # The previous mlflow-sa was defined in the mlops namespace, which can
+      # prevent pod creation here because this Job runs in federated-learning.
+      serviceAccountName: default
 
       containers:
       - name: trainer

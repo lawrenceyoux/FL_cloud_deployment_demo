@@ -305,9 +305,10 @@ jobs:
       - name: Stream training logs
         run: |
           echo "═══ Waiting for pod to appear ════════════════════════════════"
+          JOB_NAME="train-baseline-${RUN_ID}"
           # Wait up to 3 min for at least one pod to be created
           for i in $(seq 1 18); do
-            POD_COUNT=$(kubectl get pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
+            POD_COUNT=$(kubectl get pods -l "job-name=${JOB_NAME}" -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
             if [ "$POD_COUNT" -gt 0 ]; then
               echo "✅ Pod(s) found after $((i * 10))s"
               break
@@ -317,7 +318,7 @@ jobs:
           done
 
           # If still zero pods after 3 minutes, dump diagnostics
-          POD_COUNT=$(kubectl get pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
+          POD_COUNT=$(kubectl get pods -l "job-name=${JOB_NAME}" -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
           if [ "$POD_COUNT" -eq 0 ]; then
             echo ""
             echo "❌❌❌ NO PODS CREATED AFTER 3 MINUTES ❌❌❌"
@@ -345,16 +346,16 @@ jobs:
 
           echo ""
           echo "═══ Pod list ═════════════════════════════════════════════════"
-          kubectl get pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" -o wide || true
+          kubectl get pods -l "job-name=${JOB_NAME}" -n "$NAMESPACE" -o wide || true
 
           echo ""
           echo "═══ Pod describe (events / image pull errors) ════════════════"
-          kubectl describe pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" || true
+          kubectl describe pods -l "job-name=${JOB_NAME}" -n "$NAMESPACE" || true
 
           echo ""
           echo "═══ Training logs (streaming) ════════════════════════════════"
           kubectl logs \
-            --selector="run-id=${RUN_ID}" \
+            --selector="job-name=${JOB_NAME}" \
             --namespace="$NAMESPACE" \
             --follow \
             --pod-running-timeout=180s \
@@ -381,11 +382,12 @@ jobs:
       - name: Show final job status
         if: always()
         run: |
+          JOB_NAME="train-baseline-${RUN_ID}"
           echo "=== Job status ==="
           kubectl describe job "train-baseline-${RUN_ID}" -n "$NAMESPACE" || true
           echo ""
           echo "=== Pod exit / conditions ==="
-          kubectl get pods -l "run-id=${RUN_ID}" -n "$NAMESPACE" -o wide || true
+          kubectl get pods -l "job-name=${JOB_NAME}" -n "$NAMESPACE" -o wide || true
           echo ""
           echo "══════════════════════════════════════════════════════════════"
           echo "  MLflow UI — view results with:"
