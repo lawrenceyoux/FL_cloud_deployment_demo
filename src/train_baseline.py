@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import mlflow
@@ -48,6 +50,48 @@ from src.models.stroke_classifier import (
 from src.preprocessing.pipeline import load_hospital_tensors
 from src.utils.losses import make_criterion
 from src.utils.metrics import evaluate_model, print_metrics
+
+
+# ---------------------------------------------------------------------------
+# Optional S3 model artifact upload
+# ---------------------------------------------------------------------------
+def _maybe_upload_to_s3(model: nn.Module, run_name: str) -> None:
+    """Upload model state-dict to S3 when USE_S3_ARTIFACTS=1.
+
+    Requires:
+      - USE_S3_ARTIFACTS=1  (env var)
+      - S3_MODEL_BUCKET     (env var, e.g. "fl-demo-models")
+      - AWS credentials available via IRSA, instance profile, or env vars.
+
+    The S3 key pattern is:  baseline/<run_name>/<UTC-timestamp>/model.pt
+    The S3 URI is logged to MLflow as the param ``s3_model_uri`` so it can
+    be retrieved later for FL initialisation or deployment.
+    """
+    if os.environ.get("USE_S3_ARTIFACTS", "0") != "1":
+        return
+    bucket = os.environ.get("S3_MODEL_BUCKET", "")
+    if not bucket:
+        print("⚠️  USE_S3_ARTIFACTS=1 but S3_MODEL_BUCKET is not set — skipping S3 upload")
+        return
+    try:
+        import boto3  # included transitively via mlflow; add explicitly if needed
+
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        s3 = boto3.client("s3", region_name=region)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        key = f"baseline/{run_name}/{ts}/model.pt"
+
+        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as tmp:
+            torch.save(model.state_dict(), tmp.name)
+            s3.upload_file(tmp.name, bucket, key)
+
+        s3_uri = f"s3://{bucket}/{key}"
+        print(f"✅ Model uploaded → {s3_uri}")
+        # Log alongside the MLflow run so the URI is discoverable in the UI
+        mlflow.log_param("s3_model_uri", s3_uri)
+    except Exception as exc:
+        # Non-fatal: training already succeeded; S3 is supplementary storage
+        print(f"⚠️  S3 upload failed (non-fatal): {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +176,8 @@ def run_training(
         mlflow.log_metrics({f"final_{k}": v for k, v in final_metrics.items()})
         mlflow.log_text(str(conf), "confusion_matrix.txt")
         mlflow.pytorch.log_model(model, "model")
+        # Optionally push the state-dict to S3 for downstream FL initialisation
+        _maybe_upload_to_s3(model, run_name)
 
     return final_metrics
 

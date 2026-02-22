@@ -41,10 +41,10 @@ spec:
         run-id: "${RUN_ID}"
     spec:
       restartPolicy: Never
-      # Use the namespace-local default service account for baseline training.
-      # The previous mlflow-sa was defined in the mlops namespace, which can
-      # prevent pod creation here because this Job runs in federated-learning.
-      serviceAccountName: default
+      # fl-trainer ServiceAccount is created by train-eks.yml before the Job
+      # is applied.  For S3 model upload, annotate the SA with an IRSA role:
+      #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT>:role/fl-trainer-s3
+      serviceAccountName: mlflow-sa
 
       containers:
       - name: trainer
@@ -78,6 +78,31 @@ spec:
         # Uncomment below and set USE_S3=1 to read hospital data from S3:
         # - name: S3_RAW_BUCKET
         #   value: "fl-demo-data-hospital-1"
+
+        # ── S3 model artifact upload ────────────────────────────────
+        # Set USE_S3_ARTIFACTS=1 to push the trained model to S3 after
+        # training (in addition to logging it to MLflow).
+        # The fl-trainer ServiceAccount must have an IRSA role with
+        # s3:PutObject on the target bucket, or provide AWS creds via a
+        # Kubernetes Secret mounted here:
+        - name: USE_S3_ARTIFACTS
+          value: "0"
+        - name: S3_MODEL_BUCKET
+          valueFrom:
+            configMapKeyRef:
+              name: fl-config
+              key: S3_MODEL_BUCKET
+        # Uncomment to inject AWS creds from a Secret instead of IRSA:
+        # - name: AWS_ACCESS_KEY_ID
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: aws-s3-credentials
+        #       key: AWS_ACCESS_KEY_ID
+        # - name: AWS_SECRET_ACCESS_KEY
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: aws-s3-credentials
+        #       key: AWS_SECRET_ACCESS_KEY
 
         resources:
           requests:

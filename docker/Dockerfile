@@ -21,7 +21,10 @@
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    # Ensure /app is always on sys.path so `from src.xxx import` works
+    # regardless of how the process is launched (python -m, uvicorn, etc.)
+    PYTHONPATH=/app
 
 WORKDIR /app
 

@@ -11,3 +11,17 @@ metadata:
   name: mlops
   labels:
     name: mlops
+---
+# ServiceAccount used by FL training Jobs in the federated-learning namespace.
+# For S3 model upload, annotate with an IRSA role ARN and set USE_S3_ARTIFACTS=1
+# in the Job spec.  To use IRSA:
+#   1. Create an IAM role with s3:PutObject on fl-demo-models bucket
+#   2. Add the OIDC trust relationship for the EKS cluster
+#   3. Uncomment the annotation below (replace ACCOUNT and ROLE_NAME)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mlflow-sa
+  namespace: federated-learning
+  # annotations:
+  #   eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT>:role/<ROLE_NAME>

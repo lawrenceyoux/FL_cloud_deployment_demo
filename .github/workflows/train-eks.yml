@@ -242,6 +242,14 @@ jobs:
           fi
           echo "✅ MLflow is Running"
 
+      - name: Ensure mlflow-sa ServiceAccount exists
+        # Idempotent: apply the SA from the versioned manifest so the cluster
+        # always matches the repo. This also sets any IRSA annotations declared
+        # in fl-namespace.yaml without requiring a separate manual step.
+        run: |
+          kubectl apply -f kubernetes/namespaces/fl-namespace.yaml
+          echo "✅ Namespace + mlflow-sa ServiceAccount applied (idempotent)"
+
       - name: Delete previous Job with same run-id (if any)
         run: |
           kubectl delete job "train-baseline-${RUN_ID}" \
