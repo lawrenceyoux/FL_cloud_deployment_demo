@@ -24,23 +24,22 @@ spec:
         app: mlflow-server
     spec:
       serviceAccountName: mlflow-sa   # IRSA-bound SA for S3 access (created by Terraform)
-      initContainers:
-      # Wait for postgres to accept connections before MLflow starts
-      - name: wait-for-postgres
-        image: postgres:15-alpine
-        command:
-        - sh
-        - -c
-        - |
-          until pg_isready -h postgres.mlops.svc.cluster.local -U mlflow; do
-            echo "Waiting for postgres..."; sleep 3
-          done
-        env:
-        - name: PGPASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
+      # initContainers disabled - not using PostgreSQL backend
+      # - name: wait-for-postgres
+      #   image: postgres:15-alpine
+      #   command:
+      #   - sh
+      #   - -c
+      #   - |
+      #     until pg_isready -h postgres.mlops.svc.cluster.local -U mlflow; do
+      #       echo "Waiting for postgres..."; sleep 3
+      #     done
+      #   env:
+      #   - name: PGPASSWORD
+      #     valueFrom:
+      #       secretKeyRef:
+      #         name: postgres-secret
+      #         key: password
       containers:
       - name: mlflow
         image: ghcr.io/mlflow/mlflow:v2.22.0
@@ -48,21 +47,11 @@ spec:
         - containerPort: 5000
           name: http
         env:
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: postgres-secret
-              key: password
-        # MLflow reads these env vars directly — avoids $(VAR) substitution
-        # in the command array which Kubernetes does not expand.
+        # Using file-based backend instead of PostgreSQL
         - name: MLFLOW_BACKEND_STORE_URI
-          value: "postgresql://mlflow:$(POSTGRES_PASSWORD)@postgres.mlops.svc.cluster.local:5432/mlflow"
+          value: "file:///mlflow/mlruns"
         - name: MLFLOW_DEFAULT_ARTIFACT_ROOT
-          value: "s3://fl-demo-mlflow/artifacts"
-        - name: MLFLOW_ARTIFACTS_DESTINATION
-          value: "s3://fl-demo-mlflow/artifacts"
-        - name: AWS_REGION
-          value: "us-east-1"
+          value: "file:///mlflow/artifacts"
         command:
         - mlflow
         - server
@@ -70,7 +59,13 @@ spec:
         - "0.0.0.0"
         - --port
         - "5000"
-        - --serve-artifacts
+        - --backend-store-uri
+        - "file:///mlflow/mlruns"
+        - --default-artifact-root
+        - "file:///mlflow/artifacts"
+        volumeMounts:
+        - name: mlflow-data
+          mountPath: /mlflow
         resources:
           requests:
             memory: "512Mi"
@@ -91,6 +86,9 @@ spec:
             port: 5000
           initialDelaySeconds: 30
           periodSeconds: 10
+      volumes:
+      - name: mlflow-data
+        emptyDir: {}  # Simple ephemeral storage; use PVC for persistence
 ---
 apiVersion: v1
 kind: Service
@@ -107,7 +105,6 @@ spec:
     port: 5000
     targetPort: 5000
     protocol: TCP
-  # ClusterIP so FL clients in the cluster reach it via DNS.
-  # For browser access use: kubectl port-forward -n mlops svc/mlflow-server 5000:5000
-  type: ClusterIP
+  # LoadBalancer to get an external IP for internet access
+  type: LoadBalancer
 
