@@ -104,7 +104,8 @@ spec:
   - name: http
     port: 5000
     targetPort: 5000
+    nodePort: 30500
     protocol: TCP
-  # LoadBalancer to get an external IP for internet access
-  type: LoadBalancer
+  # NodePort exposes on all nodes at port 30500
+  type: NodePort
 
